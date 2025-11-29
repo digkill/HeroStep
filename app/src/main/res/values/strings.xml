@@ -1,0 +1,18 @@
+<resources>
+    <string name="app_name">HeroStep</string>
+    <string name="start_game">Начать игру</string>
+    <string name="select_race">Выберите расу</string>
+    <string name="humans">Люди</string>
+    <string name="orcs">Орки</string>
+    <string name="elves">Эльфы</string>
+    <string name="dwarves">Дворфы</string>
+    <string name="chaos_legion">Легион Хаоса</string>
+    <string name="undead">Нежить</string>
+    <string name="gold">Золото: %1$d</string>
+    <string name="tavern">Таверна</string>
+    <string name="hire_units">Нанять юнитов</string>
+    <string name="attack">Атака</string>
+    <string name="defense">Защита</string>
+    <string name="health">Здоровье</string>
+</resources>
+
