@@ -6,25 +6,41 @@ import org.mediarise.herostep.data.model.Unit as GameUnit
 class GameManager {
     private var gameState: GameState? = null
     
-    fun startNewGame(race: Race, heroName: String): GameState {
+    fun startNewGame(race: Race, heroName: String, profession: Profession? = null): GameState {
         val board = GameBoard()
-        val hero = createHero(race, heroName)
+        val hero = createHero(race, heroName, profession)
         val aiHeroes = createAIHeroes()
         
-        // Размещаем игрового героя на стартовой позиции
-        val startCell = board.getCell(0, 0)
-        startCell?.hero = hero
-        hero.currentCell = startCell
+        // Получаем все краевые ячейки
+        val edgeCells = board.getEdgeCells()
         
-        // Размещаем AI героев на случайных позициях
-        val allCells = board.getAllCells().filter { it.hero == null && it != startCell }
-        val randomCells = allCells.shuffled().take(aiHeroes.size)
+        // Сортируем краевые ячейки по углу для равномерного распределения
+        val sortedEdgeCells = edgeCells.sortedBy { cell ->
+            val angle = kotlin.math.atan2(cell.y.toDouble(), cell.x.toDouble())
+            angle
+        }
         
-        aiHeroes.forEachIndexed { index, aiHero ->
-            if (index < randomCells.size) {
-                val cell = randomCells[index]
-                cell.hero = aiHero
-                aiHero.currentCell = cell
+        // Всего героев: 1 игрок + 2 AI = 3
+        val allHeroes = listOf(hero) + aiHeroes
+        val totalHeroes = allHeroes.size
+        
+        // Равномерно распределяем героев по краю
+        if (sortedEdgeCells.size >= totalHeroes) {
+            val step = sortedEdgeCells.size / totalHeroes
+            
+            allHeroes.forEachIndexed { index, h ->
+                val cellIndex = (index * step) % sortedEdgeCells.size
+                val cell = sortedEdgeCells[cellIndex]
+                cell.hero = h
+                h.currentCell = cell
+            }
+        } else {
+            // Если краевых ячеек меньше, размещаем на доступных
+            sortedEdgeCells.forEachIndexed { index, cell ->
+                if (index < allHeroes.size) {
+                    cell.hero = allHeroes[index]
+                    allHeroes[index].currentCell = cell
+                }
             }
         }
         
@@ -32,18 +48,30 @@ class GameManager {
         return gameState!!
     }
     
-    private fun createHero(race: Race, name: String): Hero {
-        val baseStats = getRaceBaseStats(race)
+    private fun createHero(race: Race, name: String, profession: Profession? = null): Hero {
+        // Если профессия не указана, выбираем случайную
+        val heroProfession = profession ?: Profession.values().random()
+        
+        // Комбинируем базовые статы расы и профессии
+        val raceStats = getRaceBaseStats(race)
+        val professionStats = heroProfession
+        
+        val finalHealth = (raceStats.health + professionStats.baseHealth) / 2
+        val finalAttack = (raceStats.attack + professionStats.baseAttack) / 2
+        val finalDefense = (raceStats.defense + professionStats.baseDefense) / 2
+        val finalMovement = (raceStats.movement + professionStats.baseMovement) / 2
+        
         return Hero(
             id = "hero_${System.currentTimeMillis()}",
             name = name,
             race = race,
-            health = baseStats.health,
-            maxHealth = baseStats.health,
-            attack = baseStats.attack,
-            defense = baseStats.defense,
-            movementPoints = baseStats.movement,
-            maxMovementPoints = baseStats.movement
+            profession = heroProfession,
+            health = finalHealth,
+            maxHealth = finalHealth,
+            attack = finalAttack,
+            defense = finalDefense,
+            movementPoints = finalMovement,
+            maxMovementPoints = finalMovement
         )
     }
     
@@ -66,22 +94,34 @@ class GameManager {
     )
     
     private fun createAIHeroes(): List<Hero> {
-        // Создаем 4 героев с разными расами (без повторений)
+        // Создаем 2 AI героев с разными расами (без повторений)
         val allRaces = Race.values().toList()
-        val availableRaces = allRaces.shuffled().take(4)
+        val availableRaces = allRaces.shuffled().take(2)
+        val allProfessions = Profession.values().toList()
         
         return availableRaces.mapIndexed { index, race ->
-            val stats = getRaceBaseStats(race)
+            // Выбираем случайную профессию для каждого AI героя
+            val profession = allProfessions.random()
+            
+            // Комбинируем базовые статы расы и профессии
+            val raceStats = getRaceBaseStats(race)
+            
+            val finalHealth = (raceStats.health + profession.baseHealth) / 2
+            val finalAttack = (raceStats.attack + profession.baseAttack) / 2
+            val finalDefense = (raceStats.defense + profession.baseDefense) / 2
+            val finalMovement = (raceStats.movement + profession.baseMovement) / 2
+            
             Hero(
                 id = "ai_${race.name}_$index",
-                name = "${race.displayName} Hero",
+                name = "${race.displayName} ${profession.displayName}",
                 race = race,
-                health = stats.health,
-                maxHealth = stats.health,
-                attack = stats.attack,
-                defense = stats.defense,
-                movementPoints = stats.movement,
-                maxMovementPoints = stats.movement
+                profession = profession,
+                health = finalHealth,
+                maxHealth = finalHealth,
+                attack = finalAttack,
+                defense = finalDefense,
+                movementPoints = finalMovement,
+                maxMovementPoints = finalMovement
             )
         }
     }

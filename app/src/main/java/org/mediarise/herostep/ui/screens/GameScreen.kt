@@ -17,14 +17,15 @@ import kotlinx.coroutines.withContext
 @Composable
 fun GameScreen(
     race: Race = Race.HUMANS,
+    profession: Profession = Profession.WARRIOR,
     heroName: String = "Hero"
 ) {
     val gameManager = remember { GameManager() }
     var gameState by remember { mutableStateOf<GameState?>(null) }
 
-    LaunchedEffect(race, heroName) {
+    LaunchedEffect(race, profession, heroName) {
         gameState = withContext(Dispatchers.Default) {
-            gameManager.startNewGame(race, heroName)
+            gameManager.startNewGame(race, heroName, profession)
         }
     }
 

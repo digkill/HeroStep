@@ -80,4 +80,14 @@ class GameBoard {
         
         return neighbors
     }
+    
+    fun getEdgeCells(): List<HexCell> {
+        // Находим все ячейки на краю (где хотя бы одна координата равна радиусу или -радиусу)
+        return cells.filter { cell ->
+            val s = -cell.x - cell.y
+            kotlin.math.abs(cell.x) == boardRadius || 
+            kotlin.math.abs(cell.y) == boardRadius || 
+            kotlin.math.abs(s) == boardRadius
+        }
+    }
 }

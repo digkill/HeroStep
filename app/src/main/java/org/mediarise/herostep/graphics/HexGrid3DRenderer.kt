@@ -13,7 +13,8 @@ import javax.microedition.khronos.opengles.GL10
 class HexGrid3DRenderer(
     private val gameBoard: GameBoard,
     private val gameState: GameState? = null,
-    private val onCellSelected: (HexCell) -> Unit
+    private val onCellSelected: (HexCell) -> Unit,
+    private val context: android.content.Context? = null
 ) : GLSurfaceView.Renderer {
 
     private val vPMatrix = FloatArray(16)
@@ -22,8 +23,8 @@ class HexGrid3DRenderer(
     private val modelMatrix = FloatArray(16)
 
     private var cameraX = 0f
-    private var cameraY = 10f
-    private var cameraZ = 10f
+    private var cameraY = 15f // Высота камеры для изометрического вида
+    private var cameraZ = 15f
     private var lookAtX = 0f
     private var lookAtY = 0f
     private var lookAtZ = 0f
@@ -77,6 +78,10 @@ class HexGrid3DRenderer(
     private var isInitialized = false
     private var initializationIndex = 0
     private val cellsToInitialize = mutableListOf<HexCell>()
+    
+    // Модели героев
+    private val heroModels = mutableMapOf<String, HeroModel3D>()
+    private var lastFrameTime = System.currentTimeMillis()
 
     init {
         cellsToInitialize.addAll(gameBoard.getAllCells())
@@ -161,7 +166,18 @@ class HexGrid3DRenderer(
         GLES20.glViewport(0, 0, width, height)
         val ratio = width.toFloat() / height
 
-        Matrix.frustumM(projectionMatrix, 0, -ratio, ratio, -1f, 1f, 3f, 20f)
+        // Используем правильный frustum без искажений
+        // Ближняя и дальняя плоскости для правильной перспективы
+        // Границы рассчитываются с учетом соотношения сторон
+        val near = 1f
+        val far = 100f
+        val fov = 45f // Поле зрения в градусах
+        val top = near * kotlin.math.tan(Math.toRadians(fov / 2.0)).toFloat()
+        val bottom = -top
+        val right = top * ratio
+        val left = -right
+        
+        Matrix.frustumM(projectionMatrix, 0, left, right, bottom, top, near, far)
     }
 
     override fun onDrawFrame(gl: GL10?) {
@@ -198,17 +214,26 @@ class HexGrid3DRenderer(
                 }
             }
             
-            // Рисуем героев (кубики)
+            // Обновляем анимации моделей
+            val currentTime = System.currentTimeMillis()
+            val deltaTime = ((currentTime - lastFrameTime) / 1000.0f).coerceAtMost(0.1f)
+            lastFrameTime = currentTime
+            
+            heroModels.values.forEach { model ->
+                model.updateAnimation(deltaTime)
+            }
+            
+            // Рисуем героев (модели или кубики)
             gameState?.let { state ->
                 // Рисуем игрового героя
                 state.playerHero.currentCell?.let { cell ->
-                    drawHeroCube(state.playerHero, cell)
+                    drawHero(state.playerHero, cell)
                 }
                 
                 // Рисуем AI героев
                 state.aiHeroes.forEach { hero ->
                     hero.currentCell?.let { cell ->
-                        drawHeroCube(hero, cell)
+                        drawHero(hero, cell)
                     }
                 }
             }
@@ -287,6 +312,93 @@ class HexGrid3DRenderer(
         GLES20.glEnable(GLES20.GL_CULL_FACE)
     }
 
+    /**
+     * Рисует героя (модель или кубик, если модель не найдена)
+     */
+    private fun drawHero(hero: Hero, cell: HexCell) {
+        // Получаем или создаем модель героя
+        val modelKey = "${hero.id}_${hero.race.name}_${hero.profession.name}"
+        var heroModel = heroModels[modelKey]
+        
+        if (heroModel == null && context != null) {
+            // Пытаемся загрузить модель
+            try {
+                android.util.Log.d("HexGrid3D", "Creating hero model for ${hero.race}/${hero.profession}")
+                heroModel = HeroModel3D(context, hero)
+                heroModels[modelKey] = heroModel
+                
+                if (heroModel.isLoaded()) {
+                    android.util.Log.d("HexGrid3D", "Hero model loaded successfully")
+                } else {
+                    android.util.Log.w("HexGrid3D", "Hero model not loaded, will use cube")
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("HexGrid3D", "Error creating hero model: ${e.message}", e)
+                e.printStackTrace()
+            }
+        }
+        
+        // Если модель загружена, рисуем её, иначе рисуем кубик
+        if (heroModel != null && heroModel.isLoaded()) {
+            drawHeroModel(heroModel, hero, cell)
+        } else {
+            drawHeroCube(hero, cell)
+        }
+    }
+    
+    /**
+     * Рисует 3D модель героя
+     */
+    private fun drawHeroModel(heroModel: HeroModel3D, hero: Hero, cell: HexCell) {
+        if (program == 0) return
+        
+        GLES20.glUseProgram(program)
+        
+        // Получаем позицию ячейки
+        val (worldX, worldZ) = HexCell3D.hexToWorld(cell.x, cell.y)
+        val cellY = when (cell.type) {
+            HexCellType.MOUNTAINS -> 0.3f
+            HexCellType.LAKE -> -0.1f
+            HexCellType.CORRUPTED_LAND -> 0.1f
+            else -> 0.0f
+        }
+        
+        // Позиция героя на ячейке
+        // Для GLB моделей позиционируем выше, так как они могут быть большими
+        val heroY = cellY + 0.1f
+        
+        Matrix.setIdentityM(modelMatrix, 0)
+        Matrix.translateM(modelMatrix, 0, worldX, heroY, worldZ)
+        
+        // Масштабируем модель для человека-воина
+        if (hero.race == Race.HUMANS && hero.profession == Profession.WARRIOR) {
+            // Масштабируем модель, чтобы она помещалась на ячейке
+            // GLB модели могут быть большими, поэтому уменьшаем сильнее
+            Matrix.scaleM(modelMatrix, 0, 0.3f, 0.3f, 0.3f)
+            // Центрируем модель по Y (опускаем вниз)
+            Matrix.translateM(modelMatrix, 0, 0f, -0.5f, 0f)
+        }
+        
+        // Можно добавить поворот для анимации
+        
+        Matrix.multiplyMM(vPMatrix, 0, viewMatrix, 0, modelMatrix, 0)
+        Matrix.multiplyMM(vPMatrix, 0, projectionMatrix, 0, vPMatrix, 0)
+        
+        // Цвет модели в зависимости от расы и профессии
+        val heroColor = getColorForRace(hero.race, hero.profession)
+        
+        // Рисуем модель
+        heroModel.draw(
+            program,
+            vPMatrix,
+            mvpMatrixHandle,
+            positionHandle,
+            normalHandle,
+            colorHandle,
+            heroColor
+        )
+    }
+
     private fun drawHeroCube(hero: Hero, cell: HexCell) {
         if (program == 0) return
         
@@ -315,8 +427,8 @@ class HexGrid3DRenderer(
         
         GLES20.glUniformMatrix4fv(mvpMatrixHandle, 1, false, vPMatrix, 0)
         
-        // Цвет кубика в зависимости от расы героя
-        val heroColor = getColorForRace(hero.race)
+        // Цвет кубика в зависимости от расы и профессии героя
+        val heroColor = getColorForRace(hero.race, hero.profession)
         GLES20.glUniform4fv(colorHandle, 1, heroColor, 0)
         
         // Рисуем кубик (простой куб из 6 граней)
@@ -392,8 +504,9 @@ class HexGrid3DRenderer(
         GLES20.glDisableVertexAttribArray(normalHandle)
     }
     
-    private fun getColorForRace(race: Race): FloatArray {
-        return when (race) {
+    private fun getColorForRace(race: Race, profession: org.mediarise.herostep.data.model.Profession? = null): FloatArray {
+        // Базовый цвет расы
+        val baseColor = when (race) {
             Race.HUMANS -> floatArrayOf(0.9f, 0.8f, 0.7f, 1.0f) // Телесный
             Race.ORCS -> floatArrayOf(0.2f, 0.6f, 0.2f, 1.0f) // Зеленый
             Race.ELVES -> floatArrayOf(0.8f, 0.9f, 0.6f, 1.0f) // Светло-желтый
@@ -401,6 +514,27 @@ class HexGrid3DRenderer(
             Race.CHAOS_LEGION -> floatArrayOf(0.8f, 0.2f, 0.2f, 1.0f) // Красный
             Race.UNDEAD -> floatArrayOf(0.5f, 0.5f, 0.6f, 1.0f) // Серо-синий
         }
+        
+        // Добавляем оттенок профессии
+        if (profession != null) {
+            val professionTint = when (profession) {
+                org.mediarise.herostep.data.model.Profession.WARRIOR -> floatArrayOf(1.0f, 0.9f, 0.9f, 1.0f) // Слегка красноватый
+                org.mediarise.herostep.data.model.Profession.ARCHER -> floatArrayOf(0.9f, 1.0f, 0.9f, 1.0f) // Слегка зеленоватый
+                org.mediarise.herostep.data.model.Profession.ROGUE -> floatArrayOf(0.8f, 0.8f, 1.0f, 1.0f) // Слегка синеватый
+                org.mediarise.herostep.data.model.Profession.MAGE -> floatArrayOf(1.0f, 0.9f, 1.0f, 1.0f) // Слегка розоватый
+                org.mediarise.herostep.data.model.Profession.PRIEST -> floatArrayOf(1.0f, 1.0f, 0.9f, 1.0f) // Слегка желтоватый
+            }
+            
+            // Смешиваем базовый цвет с оттенком профессии
+            return floatArrayOf(
+                baseColor[0] * professionTint[0],
+                baseColor[1] * professionTint[1],
+                baseColor[2] * professionTint[2],
+                1.0f
+            )
+        }
+        
+        return baseColor
     }
 
     private fun getColorForCellType(type: HexCellType): FloatArray {
@@ -588,10 +722,10 @@ class HexCell3D(val cell: HexCell) {
     }
 
     companion object {
-        // Расстояние между центрами соседних ячеек
-        private const val HEX_SIZE = 1.0f
-        // Радиус шестиугольника = немного меньше половины (чтобы точно убрать промежутки)
-        private const val HEX_RADIUS = 0.96f
+        // Расстояние между центрами соседних ячеек (увеличено в 2.5 раза)
+        private const val HEX_SIZE = 2.5f
+        // Радиус шестиугольника = немного меньше половины (чтобы точно убрать промежутки) (увеличено пропорционально)
+        private const val HEX_RADIUS = 2.4f
 
         fun hexToWorld(q: Int, r: Int): Pair<Float, Float> {
             // Используем размер без промежутков - ячейки слипшиеся

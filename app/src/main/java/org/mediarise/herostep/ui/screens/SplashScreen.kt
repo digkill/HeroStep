@@ -21,7 +21,7 @@ fun SplashScreen(navController: NavController) {
     LaunchedEffect(Unit) {
         // В режиме отладки пропускаем все экраны
         if (DebugConfig.IsDebug) {
-            navController.navigate("${org.mediarise.herostep.ui.navigation.Screen.Game.route}/${DebugConfig.DEBUG_RACE.name}/${DebugConfig.DEBUG_HERO_NAME}") {
+            navController.navigate("${org.mediarise.herostep.ui.navigation.Screen.Game.route}/${DebugConfig.DEBUG_RACE.name}/${DebugConfig.DEBUG_PROFESSION.name}/${DebugConfig.DEBUG_HERO_NAME}") {
                 popUpTo(0) { inclusive = true }
             }
         } else {

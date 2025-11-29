@@ -29,14 +29,14 @@ fun HexGrid3DView(
     
     var lastTouchX by remember { mutableStateOf(0f) }
     var lastTouchY by remember { mutableStateOf(0f) }
-    var cameraAngle by remember { mutableStateOf(0.0) }
-    var cameraRadius by remember { mutableStateOf(12f) }
+    var cameraAngle by remember { mutableStateOf(Math.PI / 4.0) } // 45 градусов для изометрического вида
+    var cameraRadius by remember { mutableStateOf(20f) } // Увеличено для правильного обзора
 
     // Создаем рендерер один раз
     val renderer = remember(gameState.board) {
-        HexGrid3DRenderer(gameState.board, gameState) { cell ->
+        HexGrid3DRenderer(gameState.board, gameState, { cell ->
             onCellClick(cell)
-        }
+        }, context)
     }
     rendererRef = renderer
 
@@ -76,12 +76,13 @@ fun HexGrid3DView(
                             val dy = event.y - lastTouchY
 
                             cameraAngle += dx * 0.01
-                            cameraRadius = (cameraRadius - dy * 0.1f).coerceIn(5f, 20f)
+                            cameraRadius = (cameraRadius - dy * 0.1f).coerceIn(10f, 30f) // Границы для зума
 
                             val cameraX = (cameraRadius * cos(cameraAngle)).toFloat()
                             val cameraZ = (cameraRadius * sin(cameraAngle)).toFloat()
+                            val cameraY = cameraRadius * 0.7f // Высота пропорциональна расстоянию
 
-                            renderer.updateCamera(cameraX, 10f, cameraZ)
+                            renderer.updateCamera(cameraX, cameraY, cameraZ)
                             renderer.updateLookAt(0f, 0f, 0f)
 
                             // Безопасный вызов requestRender

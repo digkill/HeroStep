@@ -4,6 +4,7 @@ data class Hero(
     val id: String,
     val name: String,
     val race: Race,
+    val profession: Profession,
     var level: Int = 1,
     var experience: Int = 0,
     var health: Int = 100,

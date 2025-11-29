@@ -16,11 +16,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import org.mediarise.herostep.data.model.Profession
 import org.mediarise.herostep.data.model.Race
 
 @Composable
 fun RaceSelectionScreen(navController: NavController) {
     var selectedRace by remember { mutableStateOf<Race?>(null) }
+    var selectedProfession by remember { mutableStateOf<Profession?>(null) }
     var heroName by remember { mutableStateOf("") }
     
     Box(
@@ -61,6 +63,33 @@ fun RaceSelectionScreen(navController: NavController) {
             
             Spacer(modifier = Modifier.height(16.dp))
             
+            Text(
+                text = "Choose your profession",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFFe94560),
+                modifier = Modifier.padding(bottom = 12.dp)
+            )
+            
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(3),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(120.dp)
+            ) {
+                items(Profession.values().toList()) { profession ->
+                    ProfessionCard(
+                        profession = profession,
+                        isSelected = selectedProfession == profession,
+                        onClick = { selectedProfession = profession }
+                    )
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(16.dp))
+            
             OutlinedTextField(
                 value = heroName,
                 onValueChange = { heroName = it },
@@ -78,13 +107,13 @@ fun RaceSelectionScreen(navController: NavController) {
             
             Button(
                 onClick = {
-                    if (selectedRace != null && heroName.isNotBlank()) {
-                        navController.navigate("game/${selectedRace!!.name}/$heroName") {
+                    if (selectedRace != null && selectedProfession != null && heroName.isNotBlank()) {
+                        navController.navigate("game/${selectedRace!!.name}/${selectedProfession!!.name}/$heroName") {
                             popUpTo("race_selection") { inclusive = true }
                         }
                     }
                 },
-                enabled = selectedRace != null && heroName.isNotBlank(),
+                enabled = selectedRace != null && selectedProfession != null && heroName.isNotBlank(),
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp)
@@ -135,6 +164,41 @@ fun RaceCard(
                 text = race.description,
                 fontSize = 12.sp,
                 color = Color(0xFFa8a8a8)
+            )
+        }
+    }
+}
+
+@Composable
+fun ProfessionCard(
+    profession: Profession,
+    isSelected: Boolean,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() },
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelected) Color(0xFFe94560) else Color(0xFF16213e)
+        ),
+        border = if (isSelected) {
+            androidx.compose.foundation.BorderStroke(2.dp, Color.White)
+        } else null
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(8.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = profession.displayName,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White
             )
         }
     }

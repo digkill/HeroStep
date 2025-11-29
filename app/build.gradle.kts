@@ -77,6 +77,11 @@ dependencies {
     // 3D Graphics - Rajawali (lightweight 3D engine for Android)
     implementation("org.rajawali3d:rajawali:1.2.1970")
     
+    // GLB/GLTF model loading
+    implementation("de.javagl:obj:0.3.0")
+    // GLB/glTF parser
+    implementation("org.joml:joml:1.10.5")
+    
     // Video Player
     implementation("androidx.media3:media3-exoplayer:1.2.0")
     implementation("androidx.media3:media3-ui:1.2.0")

@@ -27,9 +27,12 @@ fun GameNavGraph(navController: NavHostController) {
             RaceSelectionScreen(navController = navController)
         }
         composable(
-            route = "${Screen.Game.route}/{race}/{heroName}",
+            route = "${Screen.Game.route}/{race}/{profession}/{heroName}",
             arguments = listOf(
                 navArgument("race") {
+                    type = NavType.StringType
+                },
+                navArgument("profession") {
                     type = NavType.StringType
                 },
                 navArgument("heroName") {
@@ -38,9 +41,11 @@ fun GameNavGraph(navController: NavHostController) {
             )
         ) { backStackEntry ->
             val raceName = backStackEntry.arguments?.getString("race") ?: "HUMANS"
+            val professionName = backStackEntry.arguments?.getString("profession") ?: "WARRIOR"
             val heroName = backStackEntry.arguments?.getString("heroName") ?: "Hero"
             val race = org.mediarise.herostep.data.model.Race.valueOf(raceName)
-            GameScreen(race = race, heroName = heroName)
+            val profession = org.mediarise.herostep.data.model.Profession.valueOf(professionName)
+            GameScreen(race = race, profession = profession, heroName = heroName)
         }
     }
 }
