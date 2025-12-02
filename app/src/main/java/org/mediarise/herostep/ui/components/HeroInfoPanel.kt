@@ -1,8 +1,11 @@
 package org.mediarise.herostep.ui.components
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Divider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -14,7 +17,11 @@ import androidx.compose.ui.unit.sp
 import org.mediarise.herostep.data.model.Hero
 
 @Composable
-fun HeroInfoPanel(hero: Hero) {
+fun HeroInfoPanel(
+    hero: Hero,
+    isSelected: Boolean = false,
+    onSelectHero: (() -> Unit)? = null
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -25,9 +32,26 @@ fun HeroInfoPanel(hero: Hero) {
             text = hero.name,
             fontSize = 24.sp,
             fontWeight = FontWeight.Bold,
-            color = Color.White,
+            color = if (isSelected) Color(0xFF4a90e2) else Color.White,
             modifier = Modifier.padding(bottom = 8.dp)
         )
+        
+        if (onSelectHero != null && hero.canMove()) {
+            Button(
+                onClick = onSelectHero,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isSelected) Color(0xFF4a90e2) else Color(0xFF2a2a3e)
+                )
+            ) {
+                Text(
+                    text = if (isSelected) "Selected - Click to deselect" else "Select for movement",
+                    fontSize = 14.sp
+                )
+            }
+        }
         
         Text(
             text = hero.race.displayName,

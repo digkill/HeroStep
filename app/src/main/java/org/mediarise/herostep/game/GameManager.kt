@@ -5,6 +5,7 @@ import org.mediarise.herostep.data.model.Unit as GameUnit
 
 class GameManager {
     private var gameState: GameState? = null
+    private var pathfinder: Pathfinder? = null
     
     fun startNewGame(race: Race, heroName: String, profession: Profession? = null): GameState {
         val board = GameBoard()
@@ -45,6 +46,7 @@ class GameManager {
         }
         
         gameState = GameState(board, hero, aiHeroes)
+        pathfinder = Pathfinder(board)
         return gameState!!
     }
     
@@ -127,25 +129,83 @@ class GameManager {
     }
     
     fun moveHero(hero: Hero, targetCell: HexCell): Boolean {
-        val currentCell = hero.currentCell ?: return false
-        val board = gameState?.board ?: return false
+        return try {
+            val currentCell = hero.currentCell ?: return false
+            val board = gameState?.board ?: return false
+            val pathfinder = this.pathfinder ?: return false
+            
+            if (!hero.canMove()) return false
+            if (!targetCell.canMoveTo()) return false
+            
+            // Если целевая ячейка - соседняя, используем старую логику
+            val neighbors = board.getNeighbors(currentCell)
+            if (targetCell in neighbors) {
+                val movementCost = targetCell.type.movementCost
+                if (hero.movementPoints < movementCost) return false
+                
+                // Перемещаем героя
+                currentCell.hero = null
+                targetCell.hero = hero
+                hero.currentCell = targetCell
+                hero.movementPoints -= movementCost
+                
+                return true
+            }
+            
+            // Ищем путь до целевой ячейки
+            val path = pathfinder.findPath(currentCell, targetCell, hero) ?: return false
+            
+            // Вычисляем стоимость пути
+            val pathCost = pathfinder.calculatePathCost(path)
+            
+            // Проверяем, достаточно ли очков перемещения
+            if (hero.movementPoints < pathCost) return false
+            
+            // Перемещаем героя
+            currentCell.hero = null
+            targetCell.hero = hero
+            hero.currentCell = targetCell
+            hero.movementPoints -= pathCost
+            
+            true
+        } catch (e: Exception) {
+            android.util.Log.e("GameManager", "Error moving hero: ${e.message}", e)
+            e.printStackTrace()
+            false
+        }
+    }
+    
+    /**
+     * Получает все доступные ячейки для перемещения героя
+     */
+    fun getReachableCells(hero: Hero): Set<HexCell> {
+        return try {
+            val currentCell = hero.currentCell ?: return emptySet()
+            val pathfinder = this.pathfinder ?: return emptySet()
+            val board = gameState?.board ?: return emptySet()
+            
+            // Дополнительная проверка
+            if (board.getNeighbors(currentCell).isEmpty()) {
+                android.util.Log.w("GameManager", "Current cell has no neighbors")
+                return setOf(currentCell)
+            }
+            
+            pathfinder.findReachableCells(currentCell, hero)
+        } catch (e: Exception) {
+            android.util.Log.e("GameManager", "Error finding reachable cells: ${e.message}", e)
+            e.printStackTrace()
+            emptySet()
+        }
+    }
+    
+    /**
+     * Находит путь от текущей позиции героя до целевой ячейки
+     */
+    fun findPath(hero: Hero, targetCell: HexCell): List<HexCell>? {
+        val currentCell = hero.currentCell ?: return null
+        val pathfinder = this.pathfinder ?: return null
         
-        if (!hero.canMove()) return false
-        if (!targetCell.canMoveTo()) return false
-        
-        val neighbors = board.getNeighbors(currentCell)
-        if (targetCell !in neighbors) return false
-        
-        val movementCost = targetCell.type.movementCost
-        if (hero.movementPoints < movementCost) return false
-        
-        // Перемещаем героя
-        currentCell.hero = null
-        targetCell.hero = hero
-        hero.currentCell = targetCell
-        hero.movementPoints -= movementCost
-        
-        return true
+        return pathfinder.findPath(currentCell, targetCell, hero)
     }
     
     fun attackMob(hero: Hero, mob: Mob): BattleResult {

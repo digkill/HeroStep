@@ -82,6 +82,12 @@ class HexGrid3DRenderer(
     // Модели героев
     private val heroModels = mutableMapOf<String, HeroModel3D>()
     private var lastFrameTime = System.currentTimeMillis()
+    
+    // Доступные ячейки для перемещения (защищены синхронизацией)
+    private val reachableCellsLock = Any()
+    private var reachableCells = mutableSetOf<HexCell>()
+    @Volatile
+    private var selectedHero: Hero? = null
 
     init {
         cellsToInitialize.addAll(gameBoard.getAllCells())
@@ -206,9 +212,14 @@ class HexGrid3DRenderer(
                 0f, 1f, 0f
             )
 
+            // Получаем копию доступных ячеек для безопасного доступа из GL thread
+            val currentReachableCells = getReachableCellsCopy()
+            
             hexCells.forEach { hexCell ->
                 try {
-                    drawHexCell(hexCell)
+                    // Проверяем, является ли ячейка доступной для перемещения
+                    val isReachable = currentReachableCells.contains(hexCell.cell)
+                    drawHexCell(hexCell, isReachable)
                 } catch (e: Exception) {
                     android.util.Log.e("HexGrid3D", "Error drawing hex cell: ${e.message}")
                 }
@@ -242,7 +253,7 @@ class HexGrid3DRenderer(
         }
     }
 
-    private fun drawHexCell(hexCell: HexCell3D) {
+    private fun drawHexCell(hexCell: HexCell3D, isReachable: Boolean = false) {
         if (program == 0) return
         
         GLES20.glUseProgram(program)
@@ -256,7 +267,17 @@ class HexGrid3DRenderer(
         GLES20.glUniformMatrix4fv(mvpMatrixHandle, 1, false, vPMatrix, 0)
 
         // Получаем цвет для типа ячейки
-        val color = getColorForCellType(hexCell.cell.type)
+        var color = getColorForCellType(hexCell.cell.type)
+        
+        // Если ячейка доступна для перемещения, делаем её ярче
+        if (isReachable) {
+            color = floatArrayOf(
+                (color[0] + 0.3f).coerceAtMost(1.0f),
+                (color[1] + 0.3f).coerceAtMost(1.0f),
+                (color[2] + 0.3f).coerceAtMost(1.0f),
+                1.0f
+            )
+        }
         
         // Сначала рисуем боковые грани (более темные)
         val sideColor = floatArrayOf(
@@ -591,6 +612,47 @@ class HexGrid3DRenderer(
     }
 
     fun isReady(): Boolean = isInitialized
+    
+    /**
+     * Устанавливает доступные ячейки для перемещения и выбранного героя
+     * Безопасно вызывать из любого потока
+     */
+    fun setReachableCells(cells: Set<HexCell>, hero: Hero?) {
+        try {
+            synchronized(reachableCellsLock) {
+                reachableCells.clear()
+                reachableCells.addAll(cells)
+            }
+            selectedHero = hero
+        } catch (e: Exception) {
+            android.util.Log.e("HexGrid3DRenderer", "Error setting reachable cells: ${e.message}", e)
+            e.printStackTrace()
+        }
+    }
+    
+    /**
+     * Очищает доступные ячейки
+     */
+    fun clearReachableCells() {
+        try {
+            synchronized(reachableCellsLock) {
+                reachableCells.clear()
+            }
+            selectedHero = null
+        } catch (e: Exception) {
+            android.util.Log.e("HexGrid3DRenderer", "Error clearing reachable cells: ${e.message}", e)
+            e.printStackTrace()
+        }
+    }
+    
+    /**
+     * Безопасно получает копию доступных ячеек
+     */
+    private fun getReachableCellsCopy(): Set<HexCell> {
+        return synchronized(reachableCellsLock) {
+            reachableCells.toSet()
+        }
+    }
 }
 
 class HexCell3D(val cell: HexCell) {

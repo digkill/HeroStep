@@ -20,6 +20,8 @@ import kotlin.math.sin
 fun HexGrid3DView(
     gameState: GameState,
     onCellClick: (org.mediarise.herostep.data.model.HexCell) -> Unit,
+    reachableCells: Set<org.mediarise.herostep.data.model.HexCell> = emptySet(),
+    selectedHero: org.mediarise.herostep.data.model.Hero? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -39,6 +41,27 @@ fun HexGrid3DView(
         }, context)
     }
     rendererRef = renderer
+    
+    // Обновляем доступные ячейки в рендерере
+    LaunchedEffect(reachableCells, selectedHero) {
+        try {
+            // Обновляем состояние рендерера напрямую (это безопасно, так как мы только устанавливаем переменные)
+            renderer.setReachableCells(reachableCells, selectedHero)
+            // Запрашиваем перерисовку, если view готов
+            if (isViewReady) {
+                glSurfaceViewRef?.post {
+                    try {
+                        glSurfaceViewRef?.requestRender()
+                    } catch (e: Exception) {
+                        android.util.Log.e("HexGrid3DView", "Error requesting render: ${e.message}", e)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("HexGrid3DView", "Error setting reachable cells: ${e.message}", e)
+            e.printStackTrace()
+        }
+    }
 
     AndroidView(
         factory = { ctx ->
@@ -61,6 +84,7 @@ fun HexGrid3DView(
                         isViewReady = true
                     } catch (e: Exception) {
                         android.util.Log.e("HexGrid3D", "Error setting render mode: ${e.message}", e)
+                        e.printStackTrace()
                     }
                 }
 
@@ -88,7 +112,11 @@ fun HexGrid3DView(
                             // Безопасный вызов requestRender
                             val view = glSurfaceViewRef
                             view?.post {
-                                view.requestRender()
+                                try {
+                                    view.requestRender()
+                                } catch (e: Exception) {
+                                    android.util.Log.e("HexGrid3DView", "Error requesting render: ${e.message}", e)
+                                }
                             }
 
                             lastTouchX = event.x

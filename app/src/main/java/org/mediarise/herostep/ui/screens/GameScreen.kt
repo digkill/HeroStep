@@ -30,6 +30,8 @@ fun GameScreen(
     }
 
     var selectedCell by remember { mutableStateOf<HexCell?>(null) }
+    var selectedHero by remember { mutableStateOf<Hero?>(null) }
+    var reachableCells by remember { mutableStateOf<Set<HexCell>>(emptySet()) }
     var showTavernDialog by remember { mutableStateOf(false) }
     var showCellDialog by remember { mutableStateOf(false) }
 
@@ -68,9 +70,39 @@ fun GameScreen(
             ) {
                 HexGrid3DView(
                     gameState = currentState,
+                    reachableCells = reachableCells,
+                    selectedHero = selectedHero,
                     onCellClick = { cell ->
-                        selectedCell = cell
-                        showCellDialog = true
+                        try {
+                            // Если герой выбран и ячейка доступна для перемещения
+                            if (selectedHero != null && reachableCells.contains(cell)) {
+                                if (gameManager.moveHero(selectedHero!!, cell)) {
+                                    gameState = gameManager.getCurrentGameState() ?: currentState
+                                    // Очищаем выбор после перемещения
+                                    selectedHero = null
+                                    reachableCells = emptySet()
+                                }
+                            } else if (cell.hero != null && cell.hero == currentState.playerHero) {
+                                // Выбираем героя игрока
+                                val hero = cell.hero!!
+                                selectedHero = hero
+                                try {
+                                    reachableCells = gameManager.getReachableCells(hero)
+                                } catch (e: Exception) {
+                                    android.util.Log.e("GameScreen", "Error getting reachable cells: ${e.message}", e)
+                                    e.printStackTrace()
+                                    selectedHero = null
+                                    reachableCells = emptySet()
+                                }
+                            } else {
+                                // Обычный клик на ячейку
+                                selectedCell = cell
+                                showCellDialog = true
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.e("GameScreen", "Error handling cell click: ${e.message}", e)
+                            e.printStackTrace()
+                        }
                     }
                 )
             }
@@ -81,7 +113,42 @@ fun GameScreen(
                     .fillMaxHeight()
                     .background(Color(0xFF1a1a2e))
             ) {
-                HeroInfoPanel(hero = currentState.playerHero)
+                HeroInfoPanel(
+                    hero = currentState.playerHero,
+                    isSelected = selectedHero == currentState.playerHero,
+                    onSelectHero = {
+                        try {
+                            if (selectedHero == currentState.playerHero) {
+                                // Снимаем выбор
+                                selectedHero = null
+                                reachableCells = emptySet()
+                            } else {
+                                // Выбираем героя
+                                val hero = currentState.playerHero
+                                if (hero.currentCell != null && hero.canMove()) {
+                                    selectedHero = hero
+                                    // Вычисляем доступные ячейки синхронно (быстро для небольшой карты)
+                                    // Если будет медленно, можно вернуть асинхронный вариант
+                                    try {
+                                        reachableCells = gameManager.getReachableCells(hero)
+                                    } catch (e: Exception) {
+                                        android.util.Log.e("GameScreen", "Error getting reachable cells: ${e.message}", e)
+                                        e.printStackTrace()
+                                        selectedHero = null
+                                        reachableCells = emptySet()
+                                    }
+                                } else {
+                                    android.util.Log.w("GameScreen", "Hero cannot be selected: currentCell=${hero.currentCell}, canMove=${hero.canMove()}")
+                                }
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.e("GameScreen", "Error in onSelectHero: ${e.message}", e)
+                            e.printStackTrace()
+                            selectedHero = null
+                            reachableCells = emptySet()
+                        }
+                    }
+                )
             }
         }
 

@@ -264,7 +264,7 @@ class HeroModel3D(
             .put(normalsArray)
         normalsBuffer?.position(0)
         
-        indicesBuffer = ByteBuffer.allocateDirect(indicesIntArray.size * 4)
+        indicesBuffer =        ByteBuffer.allocateDirect(indicesIntArray.size * 4)
             .order(ByteOrder.nativeOrder())
             .asIntBuffer()
             .put(indicesIntArray)

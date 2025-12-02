@@ -96,6 +96,12 @@ fun CellInteractionDialog(
                 }
                 
                 if (!cell.isOccupied() && !cell.hasMob && !cell.hasTavern) {
+                    Text(
+                        text = "Movement cost: ${cell.type.movementCost}",
+                        fontSize = 14.sp,
+                        color = Color(0xFFa8a8a8),
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
                     Button(
                         onClick = {
                             onMove()
@@ -107,6 +113,21 @@ fun CellInteractionDialog(
                     ) {
                         Text("Move here")
                     }
+                }
+                
+                if (cell.hero != null) {
+                    Text(
+                        text = "Hero: ${cell.hero!!.name}",
+                        fontSize = 16.sp,
+                        color = Color(0xFF4a90e2),
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                    Text(
+                        text = "Movement points: ${cell.hero!!.movementPoints}/${cell.hero!!.maxMovementPoints}",
+                        fontSize = 14.sp,
+                        color = Color(0xFFa8a8a8),
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
                 }
                 
                 Spacer(modifier = Modifier.height(8.dp))
