@@ -2,6 +2,7 @@ package org.mediarise.herostep.game
 
 import org.mediarise.herostep.data.model.*
 import org.mediarise.herostep.data.model.Unit as GameUnit
+import kotlin.random.Random
 
 class GameManager {
     private var gameState: GameState? = null
@@ -45,7 +46,7 @@ class GameManager {
             }
         }
         
-        gameState = GameState(board, hero, aiHeroes)
+        gameState = GameState(board, hero, aiHeroes).also { it.setupNewGameTurnState() }
         pathfinder = Pathfinder(board)
         return gameState!!
     }
@@ -63,7 +64,7 @@ class GameManager {
         val finalDefense = (raceStats.defense + professionStats.baseDefense) / 2
         val finalMovement = (raceStats.movement + professionStats.baseMovement) / 2
         
-        return Hero(
+        val hero = Hero(
             id = "hero_${System.currentTimeMillis()}",
             name = name,
             race = race,
@@ -75,6 +76,11 @@ class GameManager {
             movementPoints = finalMovement,
             maxMovementPoints = finalMovement
         )
+        
+        // Инициализируем idle-анимацию
+        hero.triggerAnimation(HeroAnimationEvent.IDLE)
+        
+        return hero
     }
     
     private fun getRaceBaseStats(race: Race): RaceStats {
@@ -113,7 +119,7 @@ class GameManager {
             val finalDefense = (raceStats.defense + profession.baseDefense) / 2
             val finalMovement = (raceStats.movement + profession.baseMovement) / 2
             
-            Hero(
+            val aiHero = Hero(
                 id = "ai_${race.name}_$index",
                 name = "${race.displayName} ${profession.displayName}",
                 race = race,
@@ -125,11 +131,72 @@ class GameManager {
                 movementPoints = finalMovement,
                 maxMovementPoints = finalMovement
             )
+            
+            // Инициализируем idle-анимацию для AI героя
+            aiHero.triggerAnimation(HeroAnimationEvent.IDLE)
+            
+            aiHero
         }
+    }
+
+    private fun isHeroAllowedToAct(hero: Hero): Boolean {
+        val state = gameState ?: return false
+        if (!state.hasRolledDice) return false
+        return state.currentHero.id == hero.id
+    }
+
+    fun rollDiceForCurrentTurn(): DiceRoll? {
+        val state = gameState ?: return null
+
+        if (state.hasRolledDice) {
+            return state.currentDiceRoll
+        }
+
+        val diceRoll = DiceRoll(
+            dieOne = Random.nextInt(1, 7),
+            dieTwo = Random.nextInt(1, 7)
+        )
+        state.applyDiceRoll(diceRoll)
+        state.currentHero.triggerAnimation(HeroAnimationEvent.ROLL)
+        return diceRoll
+    }
+
+    fun endCurrentTurn() {
+        val state = gameState ?: return
+        state.endCurrentTurn()
+    }
+
+    fun performCurrentAiTurn() {
+        val state = gameState ?: return
+        if (state.isPlayerTurn) return
+
+        val aiHero = state.currentHero
+        if (!state.hasRolledDice) {
+            rollDiceForCurrentTurn() ?: return
+        }
+
+        var moveAttempts = 0
+        while (aiHero.movementPoints > 0 && moveAttempts < 3) {
+            val currentCell = aiHero.currentCell
+            val reachable = getReachableCells(aiHero)
+                .filter { cell -> cell != currentCell }
+
+            if (reachable.isEmpty()) break
+
+            val targetCell = reachable.random()
+            val moved = moveHero(aiHero, targetCell)
+            if (!moved) break
+
+            moveAttempts++
+        }
+
+        state.endCurrentTurn()
     }
     
     fun moveHero(hero: Hero, targetCell: HexCell): Boolean {
         return try {
+            if (!isHeroAllowedToAct(hero)) return false
+
             val currentCell = hero.currentCell ?: return false
             val board = gameState?.board ?: return false
             val pathfinder = this.pathfinder ?: return false
@@ -148,6 +215,9 @@ class GameManager {
                 targetCell.hero = hero
                 hero.currentCell = targetCell
                 hero.movementPoints -= movementCost
+                hero.triggerAnimation(
+                    if (movementCost >= 2) HeroAnimationEvent.RUN else HeroAnimationEvent.WALK
+                )
                 
                 return true
             }
@@ -166,6 +236,9 @@ class GameManager {
             targetCell.hero = hero
             hero.currentCell = targetCell
             hero.movementPoints -= pathCost
+            hero.triggerAnimation(
+                if (pathCost >= 2) HeroAnimationEvent.RUN else HeroAnimationEvent.WALK
+            )
             
             true
         } catch (e: Exception) {
@@ -209,6 +282,12 @@ class GameManager {
     }
     
     fun attackMob(hero: Hero, mob: Mob): BattleResult {
+        if (!isHeroAllowedToAct(hero)) {
+            return BattleResult(heroWon = false, heroDamage = 0, mobDamage = 0)
+        }
+
+        hero.triggerAnimation(HeroAnimationEvent.FIGHT)
+
         var mobHealth = mob.health
         var heroHealth = hero.health
         
@@ -223,6 +302,9 @@ class GameManager {
         
         mob.health = mobHealth.coerceAtLeast(0)
         hero.health = heroHealth.coerceAtLeast(0)
+        if (hero.health <= 0) {
+            hero.triggerAnimation(HeroAnimationEvent.DEATH)
+        }
         
         val heroWon = mob.health <= 0
         
@@ -238,6 +320,7 @@ class GameManager {
     }
     
     fun hireUnit(hero: Hero, unit: GameUnit): Boolean {
+        if (!isHeroAllowedToAct(hero)) return false
         if (hero.gold < unit.cost) return false
         if (hero.currentCell?.hasTavern != true) return false
         
@@ -254,4 +337,3 @@ data class BattleResult(
     val heroDamage: Int,
     val mobDamage: Int
 )
-

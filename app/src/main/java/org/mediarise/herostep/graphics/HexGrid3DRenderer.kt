@@ -1,14 +1,18 @@
 package org.mediarise.herostep.graphics
 
+import android.graphics.BitmapFactory
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
+import android.opengl.GLUtils
 import android.opengl.Matrix
 import org.mediarise.herostep.data.model.*
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import java.nio.ShortBuffer
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
+import kotlin.random.Random
 
 class HexGrid3DRenderer(
     private val gameBoard: GameBoard,
@@ -68,11 +72,49 @@ class HexGrid3DRenderer(
         }
     """.trimIndent()
 
+    private val texturedVertexShaderCode = """
+        uniform mat4 uMVPMatrix;
+        attribute vec4 aPosition;
+        attribute vec2 aTexCoord;
+        attribute vec3 aNormal;
+        uniform vec3 uLightDir;
+        varying vec2 vTexCoord;
+        varying float vLighting;
+
+        void main() {
+            gl_Position = uMVPMatrix * aPosition;
+            vTexCoord = aTexCoord;
+            vec3 normal = normalize(aNormal);
+            float diff = max(dot(normal, normalize(uLightDir)), 0.0);
+            vLighting = 0.60 + diff * 0.40;
+        }
+    """.trimIndent()
+
+    private val texturedFragmentShaderCode = """
+        precision mediump float;
+        uniform sampler2D uTexture;
+        varying vec2 vTexCoord;
+        varying float vLighting;
+
+        void main() {
+            vec4 baseColor = texture2D(uTexture, vTexCoord);
+            gl_FragColor = vec4(baseColor.rgb * vLighting, baseColor.a);
+        }
+    """.trimIndent()
+
     private var program = 0
     private var positionHandle = 0
     private var normalHandle = 0
     private var colorHandle = 0
     private var mvpMatrixHandle = 0
+
+    private var texturedProgram = 0
+    private var texturedPositionHandle = 0
+    private var texturedTexCoordHandle = 0
+    private var texturedNormalHandle = 0
+    private var texturedMvpMatrixHandle = 0
+    private var texturedSamplerHandle = 0
+    private var texturedLightDirHandle = 0
 
     private val hexCells = mutableListOf<HexCell3D>()
     private var isInitialized = false
@@ -89,8 +131,29 @@ class HexGrid3DRenderer(
     @Volatile
     private var selectedHero: Hero? = null
 
+    // Случайный декор для равнин из gross1.glb
+    private var plainsModelLoaded = false
+    private var plainsVerticesBuffer: FloatBuffer? = null
+    private var plainsNormalsBuffer: FloatBuffer? = null
+    private var plainsTexCoordsBuffer: FloatBuffer? = null
+    private var plainsIndicesBuffer: ShortBuffer? = null
+    private var plainsTextureId = 0
+    private var plainsIndexCount = 0
+    private val plainsDecorRotationByCell = mutableMapOf<HexCell, Float>()
+
     init {
         cellsToInitialize.addAll(gameBoard.getAllCells())
+        initializePlainsDecorCells()
+    }
+
+    private fun initializePlainsDecorCells() {
+        gameBoard.getAllCells().forEach { cell ->
+            if (cell.type == HexCellType.PLAINS && Random.nextFloat() < 0.35f) {
+                val stepCount = 360 / PLAINS_DECOR_ROTATION_STEP_DEGREES
+                val randomStep = Random.nextInt(stepCount)
+                plainsDecorRotationByCell[cell] = (randomStep * PLAINS_DECOR_ROTATION_STEP_DEGREES).toFloat()
+            }
+        }
     }
 
     private fun initializeHexCells() {
@@ -162,6 +225,9 @@ class HexGrid3DRenderer(
             normalHandle = GLES20.glGetAttribLocation(program, "vNormal")
             colorHandle = GLES20.glGetUniformLocation(program, "uColor")
             mvpMatrixHandle = GLES20.glGetUniformLocation(program, "uMVPMatrix")
+
+            initTexturedProgram()
+            loadPlainsModelIfNeeded()
         } catch (e: Exception) {
             android.util.Log.e("HexGrid3D", "Error in onSurfaceCreated: ${e.message}", e)
             program = 0
@@ -219,7 +285,10 @@ class HexGrid3DRenderer(
                 try {
                     // Проверяем, является ли ячейка доступной для перемещения
                     val isReachable = currentReachableCells.contains(hexCell.cell)
-                    drawHexCell(hexCell, isReachable)
+                    if (!shouldHideBaseHex(hexCell.cell)) {
+                        drawHexCell(hexCell, isReachable)
+                    }
+                    drawPlainsDecor(hexCell.cell)
                 } catch (e: Exception) {
                     android.util.Log.e("HexGrid3D", "Error drawing hex cell: ${e.message}")
                 }
@@ -269,12 +338,12 @@ class HexGrid3DRenderer(
         // Получаем цвет для типа ячейки
         var color = getColorForCellType(hexCell.cell.type)
         
-        // Если ячейка доступна для перемещения, делаем её ярче
+        // Доступные для перемещения ячейки подсвечиваем зеленым.
         if (isReachable) {
             color = floatArrayOf(
-                (color[0] + 0.3f).coerceAtMost(1.0f),
-                (color[1] + 0.3f).coerceAtMost(1.0f),
-                (color[2] + 0.3f).coerceAtMost(1.0f),
+                0.15f,
+                0.95f,
+                0.25f,
                 1.0f
             )
         }
@@ -333,6 +402,198 @@ class HexGrid3DRenderer(
         GLES20.glEnable(GLES20.GL_CULL_FACE)
     }
 
+    private fun initTexturedProgram() {
+        val vertexShader = loadShader(GLES20.GL_VERTEX_SHADER, texturedVertexShaderCode)
+        val fragmentShader = loadShader(GLES20.GL_FRAGMENT_SHADER, texturedFragmentShaderCode)
+        if (vertexShader == 0 || fragmentShader == 0) {
+            android.util.Log.e("HexGrid3D", "Failed to compile textured shaders")
+            return
+        }
+
+        texturedProgram = GLES20.glCreateProgram()
+        if (texturedProgram == 0) {
+            android.util.Log.e("HexGrid3D", "Failed to create textured program")
+            return
+        }
+
+        GLES20.glAttachShader(texturedProgram, vertexShader)
+        GLES20.glAttachShader(texturedProgram, fragmentShader)
+        GLES20.glLinkProgram(texturedProgram)
+
+        val linkStatus = IntArray(1)
+        GLES20.glGetProgramiv(texturedProgram, GLES20.GL_LINK_STATUS, linkStatus, 0)
+        if (linkStatus[0] == 0) {
+            val error = GLES20.glGetProgramInfoLog(texturedProgram)
+            android.util.Log.e("HexGrid3D", "Textured program link failed: $error")
+            GLES20.glDeleteProgram(texturedProgram)
+            texturedProgram = 0
+            return
+        }
+
+        texturedPositionHandle = GLES20.glGetAttribLocation(texturedProgram, "aPosition")
+        texturedTexCoordHandle = GLES20.glGetAttribLocation(texturedProgram, "aTexCoord")
+        texturedNormalHandle = GLES20.glGetAttribLocation(texturedProgram, "aNormal")
+        texturedMvpMatrixHandle = GLES20.glGetUniformLocation(texturedProgram, "uMVPMatrix")
+        texturedSamplerHandle = GLES20.glGetUniformLocation(texturedProgram, "uTexture")
+        texturedLightDirHandle = GLES20.glGetUniformLocation(texturedProgram, "uLightDir")
+    }
+
+    private fun createTextureFromBytes(imageBytes: ByteArray): Int {
+        val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size) ?: return 0
+
+        val textureIds = IntArray(1)
+        GLES20.glGenTextures(1, textureIds, 0)
+        val textureId = textureIds[0]
+        if (textureId == 0) {
+            bitmap.recycle()
+            return 0
+        }
+
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId)
+        // NPOT-safe параметры для GLES2, иначе текстура может стать "черной".
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+
+        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
+
+        bitmap.recycle()
+        return textureId
+    }
+
+    private fun loadPlainsModelIfNeeded() {
+        if (plainsModelLoaded) return
+        val ctx = context ?: return
+
+        try {
+            val stream = ctx.assets.open("models/hexagons/gross1.glb")
+            val parsed = stream.use { GLBParser.parseGLB(it) }
+            if (parsed == null || parsed.vertices.isEmpty() || parsed.indices.isEmpty()) {
+                android.util.Log.w("HexGrid3D", "gross1.glb parse failed or empty")
+                return
+            }
+
+            plainsVerticesBuffer = ByteBuffer.allocateDirect(parsed.vertices.size * 4)
+                .order(ByteOrder.nativeOrder())
+                .asFloatBuffer()
+                .put(parsed.vertices)
+            plainsVerticesBuffer?.position(0)
+
+            plainsNormalsBuffer = ByteBuffer.allocateDirect(parsed.normals.size * 4)
+                .order(ByteOrder.nativeOrder())
+                .asFloatBuffer()
+                .put(parsed.normals)
+            plainsNormalsBuffer?.position(0)
+
+            parsed.texCoords?.let { texCoords ->
+                plainsTexCoordsBuffer = ByteBuffer.allocateDirect(texCoords.size * 4)
+                    .order(ByteOrder.nativeOrder())
+                    .asFloatBuffer()
+                    .put(texCoords)
+                plainsTexCoordsBuffer?.position(0)
+            }
+
+            val shortIndices = ShortArray(parsed.indices.size) { index ->
+                val raw = parsed.indices[index]
+                if (raw in 0..65535) raw.toShort() else 0
+            }
+            plainsIndicesBuffer = ByteBuffer.allocateDirect(shortIndices.size * 2)
+                .order(ByteOrder.nativeOrder())
+                .asShortBuffer()
+                .put(shortIndices)
+            plainsIndicesBuffer?.position(0)
+            plainsIndexCount = shortIndices.size
+
+            if (parsed.textureImageData != null && texturedProgram != 0) {
+                plainsTextureId = createTextureFromBytes(parsed.textureImageData)
+            }
+
+            plainsModelLoaded = true
+            android.util.Log.d("HexGrid3D", "Loaded plains decor gross1.glb with $plainsIndexCount indices")
+        } catch (e: Exception) {
+            android.util.Log.e("HexGrid3D", "Failed to load plains decor model: ${e.message}", e)
+        }
+    }
+
+    private fun drawPlainsDecor(cell: HexCell) {
+        if (cell.type != HexCellType.PLAINS) return
+        val rotation = plainsDecorRotationByCell[cell] ?: return
+        if (!plainsModelLoaded || program == 0) return
+
+        val vertices = plainsVerticesBuffer ?: return
+        val normals = plainsNormalsBuffer ?: return
+        val indices = plainsIndicesBuffer ?: return
+        if (plainsIndexCount <= 0) return
+
+        val (worldX, worldZ) = HexCell3D.hexToWorld(cell.x, cell.y)
+        val baseY = 0.22f
+
+        Matrix.setIdentityM(modelMatrix, 0)
+        Matrix.translateM(modelMatrix, 0, worldX, baseY, worldZ)
+        Matrix.rotateM(modelMatrix, 0, rotation, 0f, 1f, 0f)
+        Matrix.scaleM(modelMatrix, 0, PLAINS_DECOR_SCALE, PLAINS_DECOR_SCALE, PLAINS_DECOR_SCALE)
+
+        Matrix.multiplyMM(vPMatrix, 0, viewMatrix, 0, modelMatrix, 0)
+        Matrix.multiplyMM(vPMatrix, 0, projectionMatrix, 0, vPMatrix, 0)
+
+        val texCoords = plainsTexCoordsBuffer
+        val canUseTexture = texturedProgram != 0 && plainsTextureId != 0 && texCoords != null
+
+        if (canUseTexture) {
+            GLES20.glUseProgram(texturedProgram)
+            GLES20.glUniformMatrix4fv(texturedMvpMatrixHandle, 1, false, vPMatrix, 0)
+            GLES20.glUniform3f(texturedLightDirHandle, 0.35f, 0.85f, 0.25f)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, plainsTextureId)
+            GLES20.glUniform1i(texturedSamplerHandle, 0)
+
+            vertices.position(0)
+            normals.position(0)
+            texCoords?.position(0)
+            indices.position(0)
+
+            GLES20.glEnableVertexAttribArray(texturedPositionHandle)
+            GLES20.glEnableVertexAttribArray(texturedTexCoordHandle)
+            GLES20.glEnableVertexAttribArray(texturedNormalHandle)
+            GLES20.glVertexAttribPointer(texturedPositionHandle, 3, GLES20.GL_FLOAT, false, 0, vertices)
+            GLES20.glVertexAttribPointer(texturedTexCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoords)
+            GLES20.glVertexAttribPointer(texturedNormalHandle, 3, GLES20.GL_FLOAT, false, 0, normals)
+
+            GLES20.glDisable(GLES20.GL_CULL_FACE)
+            GLES20.glDrawElements(GLES20.GL_TRIANGLES, plainsIndexCount, GLES20.GL_UNSIGNED_SHORT, indices)
+            GLES20.glEnable(GLES20.GL_CULL_FACE)
+
+            GLES20.glDisableVertexAttribArray(texturedPositionHandle)
+            GLES20.glDisableVertexAttribArray(texturedTexCoordHandle)
+            GLES20.glDisableVertexAttribArray(texturedNormalHandle)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
+            return
+        }
+
+        // Fallback: если в модели нет UV/текстуры, рисуем однотонно.
+        GLES20.glUseProgram(program)
+        GLES20.glUniformMatrix4fv(mvpMatrixHandle, 1, false, vPMatrix, 0)
+        GLES20.glUniform4fv(colorHandle, 1, floatArrayOf(0.78f, 0.84f, 0.64f, 1.0f), 0)
+
+        vertices.position(0)
+        normals.position(0)
+        indices.position(0)
+
+        GLES20.glEnableVertexAttribArray(positionHandle)
+        GLES20.glEnableVertexAttribArray(normalHandle)
+        GLES20.glVertexAttribPointer(positionHandle, 3, GLES20.GL_FLOAT, false, 0, vertices)
+        GLES20.glVertexAttribPointer(normalHandle, 3, GLES20.GL_FLOAT, false, 0, normals)
+
+        GLES20.glDisable(GLES20.GL_CULL_FACE)
+        GLES20.glDrawElements(GLES20.GL_TRIANGLES, plainsIndexCount, GLES20.GL_UNSIGNED_SHORT, indices)
+        GLES20.glEnable(GLES20.GL_CULL_FACE)
+
+        GLES20.glDisableVertexAttribArray(positionHandle)
+        GLES20.glDisableVertexAttribArray(normalHandle)
+    }
+
     /**
      * Рисует героя (модель или кубик, если модель не найдена)
      */
@@ -361,8 +622,10 @@ class HexGrid3DRenderer(
         
         // Если модель загружена, рисуем её, иначе рисуем кубик
         if (heroModel != null && heroModel.isLoaded()) {
+            android.util.Log.v("HexGrid3D_RENDER", "[${hero.name}] Drawing hero MODEL")
             drawHeroModel(heroModel, hero, cell)
         } else {
+            android.util.Log.v("HexGrid3D_RENDER", "[${hero.name}] Drawing hero CUBE (model not loaded)")
             drawHeroCube(hero, cell)
         }
     }
@@ -390,17 +653,10 @@ class HexGrid3DRenderer(
         
         Matrix.setIdentityM(modelMatrix, 0)
         Matrix.translateM(modelMatrix, 0, worldX, heroY, worldZ)
+        Matrix.scaleM(modelMatrix, 0, HERO_MODEL_SCALE, HERO_MODEL_SCALE, HERO_MODEL_SCALE)
         
-        // Масштабируем модель для человека-воина
-        if (hero.race == Race.HUMANS && hero.profession == Profession.WARRIOR) {
-            // Масштабируем модель, чтобы она помещалась на ячейке
-            // GLB модели могут быть большими, поэтому уменьшаем сильнее
-            Matrix.scaleM(modelMatrix, 0, 0.3f, 0.3f, 0.3f)
-            // Центрируем модель по Y (опускаем вниз)
-            Matrix.translateM(modelMatrix, 0, 0f, -0.5f, 0f)
-        }
-        
-        // Можно добавить поворот для анимации
+        // ВАЖНО: Применяем анимацию ПОСЛЕ масштабирования, но ДО умножения матриц
+        applyHeroEventAnimationTransform(hero)
         
         Matrix.multiplyMM(vPMatrix, 0, viewMatrix, 0, modelMatrix, 0)
         Matrix.multiplyMM(vPMatrix, 0, projectionMatrix, 0, vPMatrix, 0)
@@ -442,6 +698,9 @@ class HexGrid3DRenderer(
         Matrix.setIdentityM(modelMatrix, 0)
         Matrix.translateM(modelMatrix, 0, worldX, cubeY, worldZ)
         Matrix.scaleM(modelMatrix, 0, cubeSize, cubeHeight, cubeSize)
+        
+        // ВАЖНО: Применяем анимацию ПОСЛЕ масштабирования
+        applyHeroEventAnimationTransform(hero)
         
         Matrix.multiplyMM(vPMatrix, 0, viewMatrix, 0, modelMatrix, 0)
         Matrix.multiplyMM(vPMatrix, 0, projectionMatrix, 0, vPMatrix, 0)
@@ -523,6 +782,97 @@ class HexGrid3DRenderer(
         
         GLES20.glDisableVertexAttribArray(positionHandle)
         GLES20.glDisableVertexAttribArray(normalHandle)
+    }
+
+    private val lastAnimationLogTimeByHero = mutableMapOf<String, Long>()
+    
+    private fun applyHeroEventAnimationTransform(hero: Hero) {
+        // Базовый idle-слой работает всегда (кроме состояния смерти).
+        // Это процедурная idle-анимация для всех моделей (и GLB, и кубиков)
+        val t = System.currentTimeMillis() / 1000f
+        
+        // Логируем состояние анимации раз в 3 секунды для отладки (отдельно для каждого героя)
+        val now = System.currentTimeMillis()
+        val lastLogTime = lastAnimationLogTimeByHero[hero.id] ?: 0L
+        if (now - lastLogTime > 3000) {
+            val yOffset = kotlin.math.abs(kotlin.math.sin(t * 2.2f)) * 0.18f
+            val rotationAngle = kotlin.math.sin(t * 1.5f) * 8.0f
+            android.util.Log.d("HexGrid3D_ANIM", "[${hero.name}] Event: ${hero.animationEvent}, t=$t, yOffset=$yOffset, rotation=$rotationAngle")
+            lastAnimationLogTimeByHero[hero.id] = now
+        }
+        
+        if (hero.animationEvent != HeroAnimationEvent.DEATH) {
+            // Плавное покачивание вверх-вниз (дыхание) - ЗНАЧИТЕЛЬНО увеличена амплитуда
+            // Используем большую амплитуду, так как модели масштабируются в 4 раза
+            val yOffset = kotlin.math.abs(kotlin.math.sin(t * 2.2f)) * 0.06f
+            Matrix.translateM(modelMatrix, 0, 0f, yOffset, 0f)
+            
+            // Плавное вращение влево-вправо (осмотр окружения) - хорошо заметный угол
+            val rotationAngle = kotlin.math.sin(t * 1.5f) * 15.0f
+            Matrix.rotateM(modelMatrix, 0, rotationAngle, 0f, 1f, 0f)
+        }
+
+        // Для событий кроме IDLE требуется установленное время начала
+        if (hero.animationEventStartTimeMs <= 0L && hero.animationEvent != HeroAnimationEvent.IDLE) {
+            return
+        }
+
+        val elapsedMs = (System.currentTimeMillis() - hero.animationEventStartTimeMs).coerceAtLeast(0L)
+        val elapsedSec = elapsedMs / 1000f
+
+        when (hero.animationEvent) {
+            HeroAnimationEvent.ROLL -> {
+                if (elapsedMs <= HERO_ROLL_ANIM_DURATION_MS) {
+                    val phase = (elapsedSec * 12f).coerceAtMost(8f)
+                    // Дополнительное движение поверх базового idle
+                    Matrix.translateM(modelMatrix, 0, 0f, kotlin.math.abs(kotlin.math.sin(phase)) * 0.15f, 0f)
+                    Matrix.rotateM(modelMatrix, 0, phase * 22f, 0f, 1f, 0f)
+                } else {
+                    hero.clearAnimation()
+                }
+            }
+            HeroAnimationEvent.WALK -> {
+                if (elapsedMs <= HERO_WALK_ANIM_DURATION_MS) {
+                    val phase = elapsedSec * 12f
+                    // Ходьба с покачиванием
+                    Matrix.translateM(modelMatrix, 0, 0f, kotlin.math.abs(kotlin.math.sin(phase)) * 0.08f, 0f)
+                    Matrix.rotateM(modelMatrix, 0, kotlin.math.sin(phase) * 3f, 0f, 1f, 0f)
+                } else {
+                    hero.clearAnimation()
+                }
+            }
+            HeroAnimationEvent.RUN -> {
+                if (elapsedMs <= HERO_RUN_ANIM_DURATION_MS) {
+                    val phase = elapsedSec * 20f
+                    // Бег с наклоном вперед
+                    Matrix.translateM(modelMatrix, 0, 0f, kotlin.math.abs(kotlin.math.sin(phase)) * 0.12f, 0f)
+                    Matrix.rotateM(modelMatrix, 0, -10f, 1f, 0f, 0f)
+                } else {
+                    hero.clearAnimation()
+                }
+            }
+            HeroAnimationEvent.FIGHT -> {
+                if (elapsedMs <= HERO_FIGHT_ANIM_DURATION_MS) {
+                    val phase = (elapsedSec * 10f).coerceAtMost(6f)
+                    // Боевая стойка с выпадами
+                    Matrix.translateM(modelMatrix, 0, 0f, 0f, kotlin.math.sin(phase) * 0.16f)
+                    Matrix.rotateM(modelMatrix, 0, kotlin.math.sin(phase) * 12f, 0f, 1f, 0f)
+                } else {
+                    hero.clearAnimation()
+                }
+            }
+            HeroAnimationEvent.DEATH -> {
+                val progress = (elapsedMs.toFloat() / HERO_DEATH_ANIM_DURATION_MS.toFloat()).coerceIn(0f, 1f)
+                // Падение на бок
+                Matrix.translateM(modelMatrix, 0, 0f, -0.35f * progress, 0f)
+                Matrix.rotateM(modelMatrix, 0, 88f * progress, 0f, 0f, 1f)
+                // Сохраняем финальную позу (не сбрасываем в IDLE).
+            }
+            HeroAnimationEvent.IDLE -> {
+                // Базовая idle-анимация уже применена выше (покачивание и вращение)
+                // Дополнительных трансформаций не требуется
+            }
+        }
     }
     
     private fun getColorForRace(race: Race, profession: org.mediarise.herostep.data.model.Profession? = null): FloatArray {
@@ -611,7 +961,109 @@ class HexGrid3DRenderer(
         lookAtZ = z
     }
 
+    /**
+     * Обрабатывает тап по экрану: выбирает ближайшую ячейку под курсором и вызывает callback.
+     */
+    fun handleTap(screenX: Float, screenY: Float, viewWidth: Int, viewHeight: Int): HexCell? {
+        val cell = pickCellByScreenPoint(screenX, screenY, viewWidth, viewHeight)
+        if (cell != null) {
+            onCellSelected(cell)
+        }
+        return cell
+    }
+
+    private fun pickCellByScreenPoint(
+        screenX: Float,
+        screenY: Float,
+        viewWidth: Int,
+        viewHeight: Int
+    ): HexCell? {
+        if (viewWidth <= 0 || viewHeight <= 0) return null
+
+        val localViewMatrix = FloatArray(16)
+        Matrix.setLookAtM(
+            localViewMatrix, 0,
+            cameraX, cameraY, cameraZ,
+            lookAtX, lookAtY, lookAtZ,
+            0f, 1f, 0f
+        )
+
+        val vpMatrix = FloatArray(16)
+        Matrix.multiplyMM(vpMatrix, 0, projectionMatrix, 0, localViewMatrix, 0)
+
+        val inverseVP = FloatArray(16)
+        val inverted = Matrix.invertM(inverseVP, 0, vpMatrix, 0)
+        if (!inverted) return null
+
+        val ndcX = (2f * screenX / viewWidth) - 1f
+        val ndcY = 1f - (2f * screenY / viewHeight)
+
+        val nearPoint = unprojectPoint(ndcX, ndcY, -1f, inverseVP) ?: return null
+        val farPoint = unprojectPoint(ndcX, ndcY, 1f, inverseVP) ?: return null
+
+        val rayDirX = farPoint[0] - nearPoint[0]
+        val rayDirY = farPoint[1] - nearPoint[1]
+        val rayDirZ = farPoint[2] - nearPoint[2]
+
+        if (kotlin.math.abs(rayDirY) < 0.0001f) return null
+
+        // Пересекаем луч с плоскостью земли y=0.
+        val t = -nearPoint[1] / rayDirY
+        if (t < 0f) return null
+
+        val hitX = nearPoint[0] + rayDirX * t
+        val hitZ = nearPoint[2] + rayDirZ * t
+
+        var nearestCell: HexCell? = null
+        var nearestDist2 = Float.MAX_VALUE
+
+        gameBoard.getAllCells().forEach { cell ->
+            val (cellX, cellZ) = HexCell3D.hexToWorld(cell.x, cell.y)
+            val dx = hitX - cellX
+            val dz = hitZ - cellZ
+            val dist2 = dx * dx + dz * dz
+
+            if (dist2 < nearestDist2) {
+                nearestDist2 = dist2
+                nearestCell = cell
+            }
+        }
+
+        val maxPickDistance = 2.6f
+        return if (nearestCell != null && nearestDist2 <= maxPickDistance * maxPickDistance) {
+            nearestCell
+        } else {
+            null
+        }
+    }
+
+    private fun unprojectPoint(
+        ndcX: Float,
+        ndcY: Float,
+        ndcZ: Float,
+        inverseVP: FloatArray
+    ): FloatArray? {
+        val inVec = floatArrayOf(ndcX, ndcY, ndcZ, 1f)
+        val outVec = FloatArray(4)
+        Matrix.multiplyMV(outVec, 0, inverseVP, 0, inVec, 0)
+
+        if (kotlin.math.abs(outVec[3]) < 0.00001f) return null
+        val invW = 1f / outVec[3]
+
+        return floatArrayOf(
+            outVec[0] * invW,
+            outVec[1] * invW,
+            outVec[2] * invW
+        )
+    }
+
     fun isReady(): Boolean = isInitialized
+
+    private fun shouldHideBaseHex(cell: HexCell): Boolean {
+        if (!plainsModelLoaded) return false
+        if (cell.type != HexCellType.PLAINS) return false
+        return plainsDecorRotationByCell.containsKey(cell)
+    }
     
     /**
      * Устанавливает доступные ячейки для перемещения и выбранного героя
@@ -652,6 +1104,20 @@ class HexGrid3DRenderer(
         return synchronized(reachableCellsLock) {
             reachableCells.toSet()
         }
+    }
+
+    companion object {
+        // Масштаб hero-модели.
+        private const val HERO_MODEL_SCALE = 4.0f
+        private const val HERO_ROLL_ANIM_DURATION_MS = 520L
+        private const val HERO_WALK_ANIM_DURATION_MS = 650L
+        private const val HERO_RUN_ANIM_DURATION_MS = 480L
+        private const val HERO_FIGHT_ANIM_DURATION_MS = 420L
+        private const val HERO_DEATH_ANIM_DURATION_MS = 900L
+        // Масштаб декоративной модели gross1.glb на равнинах.
+        private const val PLAINS_DECOR_SCALE = 1.8f
+        // Поворот декоративной модели выбирается случайно шагом в 30 градусов.
+        private const val PLAINS_DECOR_ROTATION_STEP_DEGREES = 30
     }
 }
 

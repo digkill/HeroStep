@@ -11,6 +11,11 @@ import java.io.InputStream
  * Пока заглушка для будущей реализации загрузки 3D моделей.
  */
 class HeroModelLoader(private val context: Context) {
+    companion object {
+        // Дефолтная модель для всех героев (игрок и AI).
+        // Используем модель пользователя с текстурами и анимациями.
+        private const val DEFAULT_HERO_MODEL_PATH = "models/heroes/Warrior Queen.glb"
+    }
     
     /**
      * Загрузить модель героя из assets
@@ -131,7 +136,16 @@ class HeroModelLoader(private val context: Context) {
      * Получить конфигурацию модели для героя
      */
     fun getModelConfigForHero(hero: Hero, modelName: String? = null): HeroModelConfig {
-        return HeroModelConfig.createDefault(hero.race, hero.profession, modelName)
+        return HeroModelConfig(
+            race = hero.race,
+            profession = hero.profession,
+            modelName = "default_warrior_queen",
+            modelPath = DEFAULT_HERO_MODEL_PATH,
+            texturePath = null,
+            scale = 1.0f,
+            rotationY = 0.0f,
+            offsetY = 0.0f
+        )
     }
     
     /**

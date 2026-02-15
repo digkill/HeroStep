@@ -31,8 +31,12 @@ fun HexGrid3DView(
     
     var lastTouchX by remember { mutableStateOf(0f) }
     var lastTouchY by remember { mutableStateOf(0f) }
+    var touchStartX by remember { mutableStateOf(0f) }
+    var touchStartY by remember { mutableStateOf(0f) }
+    var isDragging by remember { mutableStateOf(false) }
     var cameraAngle by remember { mutableStateOf(Math.PI / 4.0) } // 45 градусов для изометрического вида
     var cameraRadius by remember { mutableStateOf(20f) } // Увеличено для правильного обзора
+    val tapSlop = 16f
 
     // Создаем рендерер один раз
     val renderer = remember(gameState.board) {
@@ -88,39 +92,66 @@ fun HexGrid3DView(
                     }
                 }
 
-                setOnTouchListener { _, event ->
+                setOnTouchListener { view, event ->
                     when (event.action) {
                         MotionEvent.ACTION_DOWN -> {
                             lastTouchX = event.x
                             lastTouchY = event.y
+                            touchStartX = event.x
+                            touchStartY = event.y
+                            isDragging = false
                             true
                         }
                         MotionEvent.ACTION_MOVE -> {
                             val dx = event.x - lastTouchX
                             val dy = event.y - lastTouchY
 
-                            cameraAngle += dx * 0.01
-                            cameraRadius = (cameraRadius - dy * 0.1f).coerceIn(10f, 30f) // Границы для зума
+                            if (!isDragging) {
+                                val totalDx = event.x - touchStartX
+                                val totalDy = event.y - touchStartY
+                                if (kotlin.math.abs(totalDx) > tapSlop || kotlin.math.abs(totalDy) > tapSlop) {
+                                    isDragging = true
+                                }
+                            }
 
-                            val cameraX = (cameraRadius * cos(cameraAngle)).toFloat()
-                            val cameraZ = (cameraRadius * sin(cameraAngle)).toFloat()
-                            val cameraY = cameraRadius * 0.7f // Высота пропорциональна расстоянию
+                            if (isDragging) {
+                                cameraAngle += dx * 0.01
+                                cameraRadius = (cameraRadius - dy * 0.1f).coerceIn(10f, 30f) // Границы для зума
 
-                            renderer.updateCamera(cameraX, cameraY, cameraZ)
-                            renderer.updateLookAt(0f, 0f, 0f)
+                                val cameraX = (cameraRadius * cos(cameraAngle)).toFloat()
+                                val cameraZ = (cameraRadius * sin(cameraAngle)).toFloat()
+                                val cameraY = cameraRadius * 0.7f // Высота пропорциональна расстоянию
 
-                            // Безопасный вызов requestRender
-                            val view = glSurfaceViewRef
-                            view?.post {
-                                try {
-                                    view.requestRender()
-                                } catch (e: Exception) {
-                                    android.util.Log.e("HexGrid3DView", "Error requesting render: ${e.message}", e)
+                                renderer.updateCamera(cameraX, cameraY, cameraZ)
+                                renderer.updateLookAt(0f, 0f, 0f)
+
+                                // Безопасный вызов requestRender
+                                val glView = glSurfaceViewRef
+                                glView?.post {
+                                    try {
+                                        glView.requestRender()
+                                    } catch (e: Exception) {
+                                        android.util.Log.e("HexGrid3DView", "Error requesting render: ${e.message}", e)
+                                    }
                                 }
                             }
 
                             lastTouchX = event.x
                             lastTouchY = event.y
+                            true
+                        }
+                        MotionEvent.ACTION_UP -> {
+                            if (!isDragging) {
+                                try {
+                                    renderer.handleTap(event.x, event.y, view.width, view.height)
+                                } catch (e: Exception) {
+                                    android.util.Log.e("HexGrid3DView", "Error handling tap: ${e.message}", e)
+                                }
+                            }
+                            true
+                        }
+                        MotionEvent.ACTION_CANCEL -> {
+                            isDragging = false
                             true
                         }
                         else -> false
@@ -135,12 +166,7 @@ fun HexGrid3DView(
             
             // Управляем режимом рендеринга только после готовности view
             if (isViewReady) {
-                val ready = renderer.isReady()
-                val targetMode = if (ready) {
-                    GLSurfaceView.RENDERMODE_WHEN_DIRTY
-                } else {
-                    GLSurfaceView.RENDERMODE_CONTINUOUSLY
-                }
+                val targetMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
                 
                 // Безопасно устанавливаем режим рендеринга
                 view.post {
@@ -148,7 +174,7 @@ fun HexGrid3DView(
                         if (view.renderMode != targetMode) {
                             view.renderMode = targetMode
                             view.requestRender()
-                        } else if (!ready) {
+                        } else {
                             view.requestRender()
                         }
                     } catch (e: Exception) {
@@ -187,4 +213,3 @@ fun HexGrid3DView(
         }
     }
 }
-

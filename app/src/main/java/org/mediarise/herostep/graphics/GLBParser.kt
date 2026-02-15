@@ -1,11 +1,11 @@
 package org.mediarise.herostep.graphics
 
 import android.util.Log
+import android.util.Base64
 import org.json.JSONObject
 import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.nio.FloatBuffer
 
 /**
  * Простой парсер GLB файлов для загрузки геометрии
@@ -20,7 +20,12 @@ object GLBParser {
         val normals: FloatArray,
         val indices: IntArray, // Изменено на IntArray для поддержки больших моделей
         val indicesType: Int, // Тип индексов: 5123 (UNSIGNED_SHORT) или 5125 (UNSIGNED_INT)
-        val hasAnimation: Boolean = false
+        val hasAnimation: Boolean = false,
+        val texCoords: FloatArray? = null,
+        val colors: FloatArray? = null,
+        val materialBaseColorFactor: FloatArray? = null,
+        val textureImageData: ByteArray? = null,
+        val textureMimeType: String? = null
     )
     
     /**
@@ -62,41 +67,15 @@ object GLBParser {
             val jsonBytes = ByteArray(jsonChunkLength)
             buffer.get(jsonBytes)
             val jsonString = String(jsonBytes)
-            
             // Парсим JSON
             val json = JSONObject(jsonString)
-            // Получаем nodes из корня JSON
-            val nodes = json.getJSONArray("nodes")
-            
-            // Находим первый mesh
-            var meshIndex = -1
-            for (i in 0 until nodes.length()) {
-                val node = nodes.getJSONObject(i)
-                if (node.has("mesh")) {
-                    meshIndex = node.getInt("mesh")
-                    break
-                }
-            }
-            
-            if (meshIndex == -1) {
-                Log.e("GLBParser", "No mesh found in GLB")
+            val accessors = json.optJSONArray("accessors") ?: return null
+            val bufferViews = json.optJSONArray("bufferViews") ?: return null
+            val meshes = json.optJSONArray("meshes")
+            if (meshes == null || meshes.length() == 0) {
+                Log.e("GLBParser", "No meshes found in GLB")
                 return null
             }
-            
-            val meshes = json.getJSONArray("meshes")
-            val mesh = meshes.getJSONObject(meshIndex)
-            val primitives = mesh.getJSONArray("primitives")
-            val primitive = primitives.getJSONObject(0)
-            
-            // Получаем доступоры
-            val attributes = primitive.getJSONObject("attributes")
-            val positionAccessorIndex = attributes.getInt("POSITION")
-            val normalAccessorIndex = if (attributes.has("NORMAL")) attributes.getInt("NORMAL") else -1
-            val indicesAccessorIndex = if (primitive.has("indices")) primitive.getInt("indices") else -1
-            
-            val accessors = json.getJSONArray("accessors")
-            val bufferViews = json.getJSONArray("bufferViews")
-            val buffers = json.getJSONArray("buffers")
             
             // Читаем BIN chunk
             val binChunkLength = buffer.int
@@ -110,105 +89,348 @@ object GLBParser {
             val binData = ByteArray(binChunkLength)
             buffer.get(binData)
             val binBuffer = ByteBuffer.wrap(binData).order(ByteOrder.LITTLE_ENDIAN)
-            
-            // Извлекаем позиции
-            val positionAccessor = accessors.getJSONObject(positionAccessorIndex)
-            val positionBufferViewIndex = positionAccessor.getInt("bufferView")
-            val positionBufferView = bufferViews.getJSONObject(positionBufferViewIndex)
-            val positionByteOffset = if (positionBufferView.has("byteOffset")) positionBufferView.getInt("byteOffset") else 0
-            val positionCount = positionAccessor.getInt("count")
-            // type в accessor - это строка, а не массив
-            val positionType = positionAccessor.getString("type")
-            
-            binBuffer.position(positionByteOffset)
-            val vertices = FloatArray(positionCount * 3)
-            for (i in vertices.indices) {
-                vertices[i] = binBuffer.float
-            }
-            
-            // Извлекаем нормали
-            val normals = if (normalAccessorIndex >= 0) {
-                val normalAccessor = accessors.getJSONObject(normalAccessorIndex)
-                val normalBufferViewIndex = normalAccessor.getInt("bufferView")
-                val normalBufferView = bufferViews.getJSONObject(normalBufferViewIndex)
-                val normalByteOffset = if (normalBufferView.has("byteOffset")) normalBufferView.getInt("byteOffset") else 0
-                val normalCount = normalAccessor.getInt("count")
-                
-                Log.d("GLBParser", "Normal accessor: count=$normalCount, byteOffset=$normalByteOffset")
-                
-                binBuffer.position(normalByteOffset)
-                val normalsArray = FloatArray(normalCount * 3)
-                for (i in normalsArray.indices) {
-                    normalsArray[i] = binBuffer.float
+
+            val verticesAll = mutableListOf<Float>()
+            val normalsAll = mutableListOf<Float>()
+            val texCoordsAll = mutableListOf<Float>()
+            val colorsAll = mutableListOf<Float>()
+            val indicesAll = mutableListOf<Int>()
+            var hasAnyTexCoords = false
+            var hasAnyColors = false
+            var processedPrimitiveCount = 0
+
+            var textureImageData: ByteArray? = null
+            var textureMimeType: String? = null
+            var materialBaseColorFactor: FloatArray? = null
+
+            for (meshIndex in 0 until meshes.length()) {
+                val mesh = meshes.getJSONObject(meshIndex)
+                val primitives = mesh.optJSONArray("primitives") ?: continue
+
+                for (primitiveIndex in 0 until primitives.length()) {
+                    val primitive = primitives.getJSONObject(primitiveIndex)
+                    val attributes = primitive.optJSONObject("attributes") ?: continue
+                    val positionAccessorIndex = attributes.optInt("POSITION", -1)
+                    if (positionAccessorIndex < 0) continue
+
+                    val positions = readFloatAccessor(
+                        accessorIndex = positionAccessorIndex,
+                        expectedType = "VEC3",
+                        accessors = accessors,
+                        bufferViews = bufferViews,
+                        binBuffer = binBuffer
+                    ) ?: continue
+                    val vertexCount = positions.size / 3
+                    if (vertexCount == 0) continue
+
+                    val normals = attributes.optInt("NORMAL", -1).let { normalAccessorIndex ->
+                        if (normalAccessorIndex >= 0) {
+                            readFloatAccessor(
+                                accessorIndex = normalAccessorIndex,
+                                expectedType = "VEC3",
+                                accessors = accessors,
+                                bufferViews = bufferViews,
+                                binBuffer = binBuffer
+                            )?.takeIf { it.size == vertexCount * 3 } ?: generateNormals(positions)
+                        } else {
+                            generateNormals(positions)
+                        }
+                    }
+
+                    val texCoords = attributes.optInt("TEXCOORD_0", -1).let { texCoordAccessorIndex ->
+                        if (texCoordAccessorIndex >= 0) {
+                            readFloatAccessor(
+                                accessorIndex = texCoordAccessorIndex,
+                                expectedType = "VEC2",
+                                accessors = accessors,
+                                bufferViews = bufferViews,
+                                binBuffer = binBuffer
+                            )?.takeIf { it.size == vertexCount * 2 }
+                        } else {
+                            null
+                        }
+                    }
+
+                    val colors = attributes.optInt("COLOR_0", -1).let { colorAccessorIndex ->
+                        if (colorAccessorIndex >= 0) {
+                            readColorAccessor(
+                                accessorIndex = colorAccessorIndex,
+                                accessors = accessors,
+                                bufferViews = bufferViews,
+                                binBuffer = binBuffer
+                            )?.takeIf { it.size == vertexCount * 4 }
+                        } else {
+                            null
+                        }
+                    }
+
+                    val indices = if (primitive.has("indices")) {
+                        readIndicesAccessor(
+                            accessorIndex = primitive.getInt("indices"),
+                            accessors = accessors,
+                            bufferViews = bufferViews,
+                            binBuffer = binBuffer
+                        ) ?: IntArray(vertexCount) { it }
+                    } else {
+                        IntArray(vertexCount) { it }
+                    }
+
+                    val baseVertex = verticesAll.size / 3
+
+                    // Если впервые встретили UV/Color не в первом примитиве, заполняем предыдущие вершины нейтральными значениями.
+                    if (texCoords != null && !hasAnyTexCoords) {
+                        repeat(baseVertex * 2) { texCoordsAll.add(0f) }
+                        hasAnyTexCoords = true
+                    }
+                    if (colors != null && !hasAnyColors) {
+                        repeat(baseVertex) {
+                            colorsAll.add(1f)
+                            colorsAll.add(1f)
+                            colorsAll.add(1f)
+                            colorsAll.add(1f)
+                        }
+                        hasAnyColors = true
+                    }
+
+                    verticesAll.addAll(positions.asList())
+                    normalsAll.addAll(normals.asList())
+
+                    if (hasAnyTexCoords) {
+                        if (texCoords != null) {
+                            texCoordsAll.addAll(texCoords.asList())
+                        } else {
+                            repeat(vertexCount * 2) { texCoordsAll.add(0f) }
+                        }
+                    }
+
+                    if (hasAnyColors) {
+                        if (colors != null) {
+                            colorsAll.addAll(colors.asList())
+                        } else {
+                            repeat(vertexCount) {
+                                colorsAll.add(1f)
+                                colorsAll.add(1f)
+                                colorsAll.add(1f)
+                                colorsAll.add(1f)
+                            }
+                        }
+                    }
+
+                    indices.forEach { indicesAll.add(it + baseVertex) }
+                    processedPrimitiveCount++
+
+                    if (textureImageData == null) {
+                        val textureExtraction = extractTextureImageData(json, primitive, binData)
+                        textureImageData = textureExtraction?.first
+                        textureMimeType = textureExtraction?.second
+                    }
+                    if (materialBaseColorFactor == null) {
+                        materialBaseColorFactor = extractMaterialBaseColorFactor(json, primitive)
+                    }
                 }
-                Log.d("GLBParser", "Loaded $normalCount normals")
-                normalsArray
-            } else {
-                // Генерируем нормали, если их нет
-                Log.d("GLBParser", "No normals found, generating")
-                generateNormals(vertices)
             }
-            
-            // Извлекаем индексы
-            val (indices, indicesType) = if (indicesAccessorIndex >= 0) {
-                val indicesAccessor = accessors.getJSONObject(indicesAccessorIndex)
-                val indicesBufferViewIndex = indicesAccessor.getInt("bufferView")
-                val indicesBufferView = bufferViews.getJSONObject(indicesBufferViewIndex)
-                val indicesByteOffset = if (indicesBufferView.has("byteOffset")) indicesBufferView.getInt("byteOffset") else 0
-                val indicesCount = indicesAccessor.getInt("count")
-                val indicesComponentType = indicesAccessor.getInt("componentType")
-                
-                binBuffer.position(indicesByteOffset)
-                val indicesArray = IntArray(indicesCount)
-                
-                // Читаем индексы в зависимости от типа компонента
-                // 5123 = UNSIGNED_SHORT, 5125 = UNSIGNED_INT
-                when (indicesComponentType) {
-                    5123 -> { // UNSIGNED_SHORT -> конвертируем в INT
-                        for (i in indicesArray.indices) {
-                            val shortValue = binBuffer.short.toInt() and 0xFFFF // Преобразуем unsigned short в int
-                            indicesArray[i] = shortValue
-                        }
-                    }
-                    5125 -> { // UNSIGNED_INT
-                        for (i in indicesArray.indices) {
-                            indicesArray[i] = binBuffer.int
-                        }
-                    }
-                    else -> {
-                        Log.w("GLBParser", "Unsupported indices component type: $indicesComponentType, using UNSIGNED_SHORT")
-                        binBuffer.position(indicesByteOffset)
-                        for (i in indicesArray.indices) {
-                            val shortValue = binBuffer.short.toInt() and 0xFFFF
-                            indicesArray[i] = shortValue
-                        }
-                    }
-                }
-                
-                Log.d("GLBParser", "Loaded $indicesCount indices (componentType: $indicesComponentType)")
-                Pair(indicesArray, indicesComponentType)
-            } else {
-                // Генерируем индексы, если их нет
-                Log.d("GLBParser", "No indices found, generating sequential indices")
-                Pair(IntArray(vertices.size / 3) { it }, 5123) // По умолчанию UNSIGNED_SHORT
+
+            if (processedPrimitiveCount == 0 || verticesAll.isEmpty() || indicesAll.isEmpty()) {
+                Log.e("GLBParser", "Model has no valid primitives")
+                return null
             }
             
             // Проверяем наличие анимаций
             val hasAnimation = json.has("animations") && json.getJSONArray("animations").length() > 0
             
-            Log.d("GLBParser", "Successfully loaded model: ${vertices.size / 3} vertices, ${normals.size / 3} normals, ${indices.size} indices, indicesType: $indicesType, hasAnimation: $hasAnimation")
+            if (hasAnimation) {
+                val animations = json.getJSONArray("animations")
+                Log.d("GLBParser", "Found ${animations.length()} animation(s) in GLB file:")
+                for (i in 0 until animations.length()) {
+                    val anim = animations.getJSONObject(i)
+                    val animName = anim.optString("name", "Unnamed_$i")
+                    Log.d("GLBParser", "  Animation #$i: $animName")
+                }
+            } else {
+                Log.d("GLBParser", "No animations found in GLB file")
+            }
+            val vertices = verticesAll.toFloatArray()
+            val normals = normalsAll.toFloatArray()
+            val indices = indicesAll.toIntArray()
+            val texCoords = if (hasAnyTexCoords) texCoordsAll.toFloatArray() else null
+            val colors = if (hasAnyColors) colorsAll.toFloatArray() else null
+            val maxIndex = indices.maxOrNull() ?: 0
+            val indicesType = if (maxIndex > 65535) 5125 else 5123
+            
+            Log.d(
+                "GLBParser",
+                "Successfully loaded model: ${vertices.size / 3} vertices, ${indices.size} indices, " +
+                    "primitives=$processedPrimitiveCount, indicesType=$indicesType, hasAnimation=$hasAnimation"
+            )
             
             if (vertices.isEmpty() || indices.isEmpty()) {
                 Log.e("GLBParser", "Model has no geometry data")
                 return null
             }
             
-            return ParsedModel(vertices, normals, indices, indicesType, hasAnimation)
+            return ParsedModel(
+                vertices = vertices,
+                normals = normals,
+                indices = indices,
+                indicesType = indicesType,
+                hasAnimation = hasAnimation,
+                texCoords = texCoords,
+                colors = colors,
+                materialBaseColorFactor = materialBaseColorFactor,
+                textureImageData = textureImageData,
+                textureMimeType = textureMimeType
+            )
             
         } catch (e: Exception) {
             Log.e("GLBParser", "Error parsing GLB: ${e.message}", e)
             return null
         }
+    }
+
+    private fun readFloatAccessor(
+        accessorIndex: Int,
+        expectedType: String,
+        accessors: org.json.JSONArray,
+        bufferViews: org.json.JSONArray,
+        binBuffer: ByteBuffer
+    ): FloatArray? {
+        if (accessorIndex !in 0 until accessors.length()) return null
+        val accessor = accessors.getJSONObject(accessorIndex)
+        val type = accessor.optString("type")
+        if (type != expectedType) return null
+        if (accessor.optInt("componentType") != 5126) return null
+
+        val components = when (type) {
+            "SCALAR" -> 1
+            "VEC2" -> 2
+            "VEC3" -> 3
+            "VEC4" -> 4
+            else -> return null
+        }
+
+        val bufferViewIndex = accessor.optInt("bufferView", -1)
+        if (bufferViewIndex !in 0 until bufferViews.length()) return null
+        val bufferView = bufferViews.getJSONObject(bufferViewIndex)
+
+        val count = accessor.optInt("count", 0)
+        if (count <= 0) return null
+
+        val viewOffset = bufferView.optInt("byteOffset", 0)
+        val accessorOffset = accessor.optInt("byteOffset", 0)
+        val baseOffset = viewOffset + accessorOffset
+        val stride = bufferView.optInt("byteStride", components * 4).let { if (it <= 0) components * 4 else it }
+
+        val out = FloatArray(count * components)
+        for (i in 0 until count) {
+            val elementOffset = baseOffset + i * stride
+            for (c in 0 until components) {
+                out[i * components + c] = binBuffer.getFloat(elementOffset + c * 4)
+            }
+        }
+        return out
+    }
+
+    private fun readColorAccessor(
+        accessorIndex: Int,
+        accessors: org.json.JSONArray,
+        bufferViews: org.json.JSONArray,
+        binBuffer: ByteBuffer
+    ): FloatArray? {
+        if (accessorIndex !in 0 until accessors.length()) return null
+        val accessor = accessors.getJSONObject(accessorIndex)
+        val type = accessor.optString("type")
+        val components = when (type) {
+            "VEC3" -> 3
+            "VEC4" -> 4
+            else -> return null
+        }
+        val componentType = accessor.optInt("componentType", -1)
+        val normalized = accessor.optBoolean("normalized", false)
+
+        val bufferViewIndex = accessor.optInt("bufferView", -1)
+        if (bufferViewIndex !in 0 until bufferViews.length()) return null
+        val bufferView = bufferViews.getJSONObject(bufferViewIndex)
+
+        val count = accessor.optInt("count", 0)
+        if (count <= 0) return null
+
+        val viewOffset = bufferView.optInt("byteOffset", 0)
+        val accessorOffset = accessor.optInt("byteOffset", 0)
+        val componentSize = when (componentType) {
+            5121 -> 1
+            5123 -> 2
+            5126 -> 4
+            else -> return null
+        }
+        val stride = bufferView.optInt("byteStride", components * componentSize)
+            .let { if (it <= 0) components * componentSize else it }
+        val baseOffset = viewOffset + accessorOffset
+
+        val out = FloatArray(count * 4)
+        for (i in 0 until count) {
+            val elementOffset = baseOffset + i * stride
+            for (c in 0 until components) {
+                val value = when (componentType) {
+                    5121 -> {
+                        val raw = binBuffer.get(elementOffset + c).toInt() and 0xFF
+                        if (normalized) raw / 255f else raw.toFloat()
+                    }
+                    5123 -> {
+                        val raw = binBuffer.getShort(elementOffset + c * 2).toInt() and 0xFFFF
+                        if (normalized) raw / 65535f else raw.toFloat()
+                    }
+                    5126 -> binBuffer.getFloat(elementOffset + c * 4)
+                    else -> 1f
+                }
+                out[i * 4 + c] = value
+            }
+            out[i * 4 + 3] = if (components == 4) out[i * 4 + 3] else 1f
+        }
+        return out
+    }
+
+    private fun readIndicesAccessor(
+        accessorIndex: Int,
+        accessors: org.json.JSONArray,
+        bufferViews: org.json.JSONArray,
+        binBuffer: ByteBuffer
+    ): IntArray? {
+        if (accessorIndex !in 0 until accessors.length()) return null
+        val accessor = accessors.getJSONObject(accessorIndex)
+        if (accessor.optString("type", "SCALAR") != "SCALAR") return null
+
+        val componentType = accessor.optInt("componentType", -1)
+        val componentSize = when (componentType) {
+            5121 -> 1
+            5123 -> 2
+            5125 -> 4
+            else -> return null
+        }
+
+        val bufferViewIndex = accessor.optInt("bufferView", -1)
+        if (bufferViewIndex !in 0 until bufferViews.length()) return null
+        val bufferView = bufferViews.getJSONObject(bufferViewIndex)
+
+        val count = accessor.optInt("count", 0)
+        if (count <= 0) return null
+
+        val viewOffset = bufferView.optInt("byteOffset", 0)
+        val accessorOffset = accessor.optInt("byteOffset", 0)
+        val baseOffset = viewOffset + accessorOffset
+        val stride = bufferView.optInt("byteStride", componentSize)
+            .let { if (it <= 0) componentSize else it }
+
+        val out = IntArray(count)
+        for (i in 0 until count) {
+            val elementOffset = baseOffset + i * stride
+            out[i] = when (componentType) {
+                5121 -> binBuffer.get(elementOffset).toInt() and 0xFF
+                5123 -> binBuffer.getShort(elementOffset).toInt() and 0xFFFF
+                5125 -> binBuffer.getInt(elementOffset)
+                else -> 0
+            }
+        }
+        return out
     }
     
     /**
@@ -225,6 +447,100 @@ object GLBParser {
         }
         
         return normals
+    }
+
+    private fun extractTextureImageData(
+        json: JSONObject,
+        primitive: JSONObject,
+        binData: ByteArray
+    ): Pair<ByteArray, String>? {
+        val images = json.optJSONArray("images") ?: return null
+        if (images.length() == 0) return null
+
+        val textures = json.optJSONArray("textures")
+        val materials = json.optJSONArray("materials")
+
+        var sourceImageIndex = -1
+
+        if (primitive.has("material") && materials != null) {
+            val materialIndex = primitive.getInt("material")
+            if (materialIndex in 0 until materials.length()) {
+                val material = materials.getJSONObject(materialIndex)
+                val pbr = material.optJSONObject("pbrMetallicRoughness")
+                val baseColorTexture = pbr?.optJSONObject("baseColorTexture")
+                val textureIndex = baseColorTexture?.optInt("index", -1) ?: -1
+                if (textureIndex >= 0 && textures != null && textureIndex < textures.length()) {
+                    sourceImageIndex = textures.getJSONObject(textureIndex).optInt("source", -1)
+                }
+            }
+        }
+
+        if (sourceImageIndex < 0 && textures != null && textures.length() > 0) {
+            sourceImageIndex = textures.getJSONObject(0).optInt("source", -1)
+        }
+        if (sourceImageIndex < 0 && images.length() > 0) {
+            sourceImageIndex = 0
+        }
+        if (sourceImageIndex !in 0 until images.length()) return null
+
+        val image = images.getJSONObject(sourceImageIndex)
+        val mimeType = image.optString("mimeType", "image/png")
+
+        if (image.has("bufferView")) {
+            val bufferViews = json.optJSONArray("bufferViews") ?: return null
+            val bufferViewIndex = image.getInt("bufferView")
+            if (bufferViewIndex !in 0 until bufferViews.length()) return null
+
+            val bufferView = bufferViews.getJSONObject(bufferViewIndex)
+            val byteOffset = bufferView.optInt("byteOffset", 0)
+            val byteLength = bufferView.optInt("byteLength", 0)
+            if (byteLength <= 0 || byteOffset < 0 || byteOffset + byteLength > binData.size) return null
+
+            val bytes = binData.copyOfRange(byteOffset, byteOffset + byteLength)
+            return Pair(bytes, mimeType)
+        }
+
+        if (image.has("uri")) {
+            val uri = image.getString("uri")
+            if (uri.startsWith("data:")) {
+                val commaIndex = uri.indexOf(',')
+                if (commaIndex <= 0) return null
+
+                val metadata = uri.substring(5, commaIndex)
+                val payload = uri.substring(commaIndex + 1)
+                val uriMime = metadata.substringBefore(';').ifBlank { mimeType }
+                val bytes = if (metadata.contains(";base64")) {
+                    Base64.decode(payload, Base64.DEFAULT)
+                } else {
+                    payload.toByteArray(Charsets.UTF_8)
+                }
+                return Pair(bytes, uriMime)
+            }
+        }
+
+        return null
+    }
+
+    private fun extractMaterialBaseColorFactor(
+        json: JSONObject,
+        primitive: JSONObject
+    ): FloatArray? {
+        val materials = json.optJSONArray("materials") ?: return null
+        if (!primitive.has("material")) return null
+
+        val materialIndex = primitive.optInt("material", -1)
+        if (materialIndex !in 0 until materials.length()) return null
+
+        val material = materials.optJSONObject(materialIndex) ?: return null
+        val pbr = material.optJSONObject("pbrMetallicRoughness") ?: return null
+        val baseColorFactor = pbr.optJSONArray("baseColorFactor") ?: return null
+        if (baseColorFactor.length() < 3) return null
+
+        val r = baseColorFactor.optDouble(0, 1.0).toFloat().coerceIn(0f, 1f)
+        val g = baseColorFactor.optDouble(1, 1.0).toFloat().coerceIn(0f, 1f)
+        val b = baseColorFactor.optDouble(2, 1.0).toFloat().coerceIn(0f, 1f)
+        val a = baseColorFactor.optDouble(3, 1.0).toFloat().coerceIn(0f, 1f)
+        return floatArrayOf(r, g, b, a)
     }
 }
 
